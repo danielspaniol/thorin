@@ -36,7 +36,7 @@ Mangler::Mangler(const Scope& scope, Defs args, Defs lift)
     }
 }
 
-Continuation* Mangler::mangle() {
+Continuation* Mangler::mangle_head() {
     // create new_entry - but first collect and specialize all param types
     std::vector<const Type*> param_types;
     for (size_t i = 0, e = old_entry()->num_params(); i != e; ++i) {
@@ -63,6 +63,10 @@ Continuation* Mangler::mangle() {
     for (auto def : lift_)
         def2def_[def] = new_entry()->append_param(def->type()); // TODO reduce
 
+    return new_entry();
+}
+
+Continuation* Mangler::mangle_body() {
     mangle_body(old_entry(), new_entry());
     return new_entry();
 }
