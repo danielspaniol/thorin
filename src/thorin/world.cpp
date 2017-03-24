@@ -844,6 +844,7 @@ void World::opt() {
     partial_evaluation(*this);
     cleanup();
     lower2cff(*this);
+    higher_order_lifting(*this);
     clone_bodies(*this);
     mem2reg(*this);
     lift_builtins(*this);
