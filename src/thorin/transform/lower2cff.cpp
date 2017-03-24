@@ -8,7 +8,7 @@
 namespace thorin {
 
 void lower2cff(World& world) {
-    //HashMap<Call, Continuation*> cache;
+    HashMap<Call, Continuation*> cache;
     ContinuationSet top;
 
     bool local = true;
@@ -42,27 +42,19 @@ void lower2cff(World& world) {
                         call.callee() = callee;
                         // it's fine to keep one higher-order arg - guess the last one
                         size_t last = size_t(-1);
-                        size_t num_null = 0;
                         for (size_t i = 0, e = call.num_args(); i != e; ++i) {
                             if (callee->param(i)->order() > 0) {
                                 call.arg(i) = continuation->arg(i);
                                 last = i;
-                            } else {
+                            } else
                                 call.arg(i) = nullptr;
-                                ++num_null;
-                            }
                         }
                         call.arg(last) = nullptr;
 
-                        //const auto& p = cache.emplace(call, nullptr);
-                        //Continuation*& target = p.first->second;
-                        //if (p.second) {
-                            Scope s(call.callee()->as_continuation());
-                            Mangler mangler(s, call.args(), {});
-                            // map special arg to corresponding new param
-                            mangler.def2def_[mangler.mangle_head()->param(last - num_null + 1)] = continuation->arg(last);
-                            auto target = mangler.mangle_body();
-                        //}
+                        const auto& p = cache.emplace(call, nullptr);
+                        Continuation*& target = p.first->second;
+                        if (p.second)
+                            target = drop(call); // use already dropped version as target
 
                         jump_to_cached_call(continuation, target, call);
                     }
@@ -83,7 +75,6 @@ void lower2cff(World& world) {
 
     debug_verify(world);
     world.cleanup();
-    world.thorin();
 }
 
 }
