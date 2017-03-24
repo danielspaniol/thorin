@@ -34,14 +34,22 @@ void lower2cff(World& world) {
             for (auto n : scope.f_cfg().post_order()) {
                 auto continuation = n->continuation();
                 if (auto callee = continuation->callee()->isa_continuation()) {
-                    if (is_bad(callee)) {
+                    if (!scope.contains(callee) && is_bad(callee)) {
                         DLOG("bad: {}: {} at {}", callee, callee->type(), callee->location());
                         todo = dirty = true;
 
                         Call call(continuation);
                         call.callee() = callee;
-                        for (size_t i = 0, e = call.num_args(); i != e; ++i)
-                            call.arg(i) = callee->param(i)->order() > 0 ? continuation->arg(i) : nullptr;
+                        // it's fine to keep one higher-order arg - guess the last one
+                        size_t last = size_t(-1);
+                        for (size_t i = 0, e = call.num_args(); i != e; ++i) {
+                            if (callee->param(i)->order() > 0) {
+                                call.arg(i) = continuation->arg(i);
+                                last = i;
+                            } else
+                                call.arg(i) = nullptr;
+                        }
+                        call.arg(last) = nullptr;
 
                         const auto& p = cache.emplace(call, nullptr);
                         Continuation*& target = p.first->second;
