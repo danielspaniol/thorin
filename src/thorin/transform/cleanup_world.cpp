@@ -4,7 +4,6 @@
 #include "thorin/analyses/domtree.h"
 #include "thorin/analyses/verify.h"
 #include "thorin/transform/importer.h"
-#include "thorin/transform/hoist_enters.h"
 
 namespace thorin {
 
@@ -16,7 +15,6 @@ public:
 
     World& world() { return world_; }
     void cleanup();
-    void merge_continuations();
     void eta_conversion();
     void unreachable_code_elimination();
     void eliminate_params();
@@ -28,33 +26,45 @@ private:
     World& world_;
 };
 
-void Cleaner::merge_continuations() {
+void Cleaner::eta_conversion() {
     for (bool todo = true; todo;) {
         todo = false;
         for (auto continuation : world().continuations()) {
-            while (auto callee = continuation->callee()->isa_continuation()) {
-                if (callee->num_uses() == 1 && !callee->empty() && !callee->is_external()) {
-                    for (size_t i = 0, e = continuation->num_args(); i != e; ++i)
-                        callee->param(i)->replace(continuation->arg(i));
-                    continuation->jump(callee->callee(), callee->args(), callee->jump_debug());
-                    callee->destroy_body();
+            if (!continuation->empty()) {
+                while (auto callee = continuation->callee()->isa_continuation()) {
+                    if (callee->num_uses() == 1 && !callee->empty() && !callee->is_external()) {
+                        for (size_t i = 0, e = continuation->num_args(); i != e; ++i)
+                            callee->param(i)->replace(continuation->arg(i));
+                        continuation->jump(callee->callee(), callee->args(), callee->jump_debug());
+                        callee->destroy_body();
+                        todo = true;
+                    } else
+                        break;
+                }
+
+                if (continuation->callee()->isa<Param>() && !continuation->is_external()
+                        && continuation->args() == continuation->params_as_defs()) {
+                    continuation->replace(continuation->callee());
+                    continuation->destroy_body();
                     todo = true;
-                } else
-                    break;
+                }
             }
         }
     }
 }
 
-void Cleaner::eta_conversion() {
-    for (bool todo = true; todo;) {
-        todo = false;
-        for (auto continuation : world().continuations()) {
-            if (!continuation->empty() && !continuation->is_external() && continuation->args() == continuation->params_as_defs()) {
-                continuation->replace(continuation->callee());
-                continuation->destroy_body();
-                todo = true;
-            }
+void Cleaner::unreachable_code_elimination() {
+    ContinuationSet reachable;
+    Scope::for_each<false>(world(), [&] (const Scope& scope) {
+        DLOG("scope: {}", scope.entry());
+        for (auto n : scope.f_cfg().reverse_post_order())
+            reachable.emplace(n->continuation());
+    });
+
+    for (auto continuation : world().continuations()) {
+        if (!reachable.contains(continuation)) {
+            continuation->replace(world().bottom(continuation->type()));
+            continuation->destroy_body();
         }
     }
 }
@@ -98,21 +108,6 @@ void Cleaner::eliminate_params() {
             }
         }
 next_continuation:;
-    }
-}
-
-
-void Cleaner::unreachable_code_elimination() {
-    ContinuationSet reachable;
-    Scope::for_each(world(), [&] (const Scope& scope) {
-        DLOG("scope: {}", scope.entry());
-        for (auto n : scope.f_cfg().reverse_post_order())
-            reachable.emplace(n->continuation());
-    });
-
-    for (auto continuation : world().continuations()) {
-        if (!reachable.contains(continuation))
-            continuation->destroy_body();
     }
 }
 
@@ -170,13 +165,9 @@ void Cleaner::cleanup() {
         assert(p.second.empty() && "there are still live trackers before running cleanup");
 #endif
 
-    merge_continuations();
     eta_conversion();
-    // TODO move this to World::opt as soon as the scheduler is able to correctly schedule enters/slots etc
-    //      when they are not in the scope entry
-    hoist_enters(world());
-    eliminate_params();
     unreachable_code_elimination();
+    eliminate_params();
     rebuild();
 
 #ifndef NDEBUG

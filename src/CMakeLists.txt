@@ -12,26 +12,15 @@ find_package(Half REQUIRED)
 message(STATUS "Building with Half library from ${Half_INCLUDE_DIRS}.")
 include_directories(${Half_INCLUDE_DIRS})
 
-# check for RV
-find_package(RV QUIET)
 if(RV_FOUND)
-    message(STATUS "Building with RV.")
     add_definitions("-DRV_SUPPORT")
     include_directories(${RV_INCLUDE_DIR})
-else()
-    message(STATUS "Building without RV. Specify RV_DIR to compile with RV.")
 endif()
 
-# check for possible llvm extension
-find_package(LLVM CONFIG QUIET)
 if(LLVM_FOUND)
-    message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
-    message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
     add_definitions(${LLVM_DEFINITIONS})
     add_definitions("-DLLVM_SUPPORT")
     include_directories(${LLVM_INCLUDE_DIRS})
-else()
-    message(STATUS "Building without LLVM. Specify LLVM_DIR to compile with LLVM.")
 endif()
 
 # check for colored terminal
