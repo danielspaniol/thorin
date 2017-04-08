@@ -1,6 +1,7 @@
 #include "thorin/continuation.h"
 #include "thorin/world.h"
 #include "thorin/analyses/cfg.h"
+#include "thorin/analyses/free_defs.h"
 #include "thorin/analyses/verify.h"
 #include "thorin/transform/mangle.h"
 #include "thorin/util/log.h"
@@ -36,7 +37,7 @@ void lower2cff(World& world) {
                         }
                     };
 
-                    if (!scope.contains(callee) && is_bad(callee)) {
+                    if (is_bad(callee)) {
                         DLOG("bad: {}: {} at {}", callee, callee->type(), callee->location());
                         todo = dirty = true;
 
@@ -55,10 +56,26 @@ void lower2cff(World& world) {
                         if (is_top)
                             call.arg(last) = nullptr;
 
-                        const auto& p = cache.emplace(call, nullptr);
-                        Continuation*& target = p.first->second;
-                        if (p.second)
-                            target = drop(call); // use already dropped version as target
+                        //const auto& p = cache.emplace(call, nullptr);
+                        //Continuation*& target = p.first->second;
+                        //if (p.second)
+                        auto target = drop(call); // use already dropped version as target
+
+                        if (is_top) {
+                            Scope s(target);
+                            auto defs = free_defs(s);
+                            for (auto def : defs) {
+                                if (def->order() > 0) {
+                                    if (auto free_cont = def->isa_continuation()) {
+                                        if (top.contains(free_cont))
+                                            continue;
+                                    }
+                                    call.arg(last) = continuation->arg(last);
+                                    target = drop(call);
+                                    break;
+                                }
+                            }
+                        }
 
                         jump_to_cached_call(continuation, target, call);
                     }
