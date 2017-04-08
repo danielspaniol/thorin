@@ -9,7 +9,7 @@ namespace thorin {
 
 void lower2cff(World& world) {
     HashMap<Call, Continuation*> cache;
-    ContinuationSet top;
+    auto top = world.top_continutions();
 
     bool local = true;
     for (bool todo = true; todo || local;) {

@@ -834,6 +834,12 @@ void World::destroy(Continuation* continuation) {
     delete continuation;
 }
 
+ContinuationSet World::top_continutions() const {
+    ContinuationSet result;
+    Scope::for_each<false>(*this, [&](const Scope& scope) { result.emplace(scope.entry()); });
+    return result;
+}
+
 /*
  * optimizations
  */

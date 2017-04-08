@@ -206,6 +206,7 @@ public:
     void remove_external(Continuation* continuation) { externals_.erase(continuation); }
     bool is_external(const Continuation* continuation) { return externals().contains(const_cast<Continuation*>(continuation)); }
     void destroy(Continuation* continuation);
+    ContinuationSet top_continutions() const;
 #ifndef NDEBUG
     void breakpoint(size_t number) { breakpoints_.insert(number); }
     const Breakpoints& breakpoints() const { return breakpoints_; }

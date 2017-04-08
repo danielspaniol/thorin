@@ -9,8 +9,7 @@
 namespace thorin {
 
 void higher_order_lifting(World& world) {
-    ContinuationSet top;
-    Scope::for_each<false>(world, [&](const Scope& scope) { top.emplace(scope.entry()); });
+    auto top = world.top_continutions();
 
     Scope::for_each(world, [&](Scope& scope) {
         DLOG("scope: {}", scope.entry());
