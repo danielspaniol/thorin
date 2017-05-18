@@ -85,19 +85,11 @@ static bool is_used_higher_order(Continuation* continuation) {
 void Cleaner::eliminate_params() {
     ParamMap<const Def*> param2def;
 
-    auto mark_dynamic = [&] (Continuation* continuation) {
-        for (auto param : continuation->params())
-            param2def[param] = param;
-    };
-
-    // all external continuations' params are dynamic ...
-    for (auto continuation : world().externals())
-        mark_dynamic(continuation);
-
-    // ... and so are all continuations with an empty body or used in a higher-order context
     for (auto continuation : world().continuations()) {
-        if (continuation->empty() || is_used_higher_order(continuation))
-            mark_dynamic(continuation);
+        if (continuation->empty() || continuation->is_external() || is_used_higher_order(continuation)) {
+            for (auto param : continuation->params())
+                param2def[param] = param;   // these params are dynamic
+        }
     }
 
     // fixed-point iteration to statically find out what a param is
