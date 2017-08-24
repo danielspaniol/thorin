@@ -124,12 +124,18 @@ static bool is_used_higher_order(Continuation* continuation) {
 }
 
 void Cleaner::eliminate_params() {
+    // these are different cases encoded in this map:
+    // * Param not in the map at all:   Param is dead
+    // * Param maps to itself:          Param is dynamic and must persist
+    // * Param maps to some value:      this is the current representative of this Param
     ParamMap<const Def*> param2def;
 
+    // mark all params of empty or external continuations as dynamic
+    // also: params of continuations which are used in sth different than in callee position are also dynamic
     for (auto continuation : world().continuations()) {
         if (continuation->empty() || continuation->is_external() || is_used_higher_order(continuation)) {
             for (auto param : continuation->params())
-                param2def[param] = param;   // these params are dynamic
+                param2def[param] = param;
         }
     }
 
