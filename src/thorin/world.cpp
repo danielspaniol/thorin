@@ -12,6 +12,7 @@
 #include "thorin/transform/codegen_prepare.h"
 #include "thorin/transform/inliner.h"
 #include "thorin/transform/lift_builtins.h"
+#include "thorin/transform/flatten_tuples.h"
 #include "thorin/transform/higher_order_lifting.h"
 #include "thorin/transform/hoist_enters.h"
 #include "thorin/transform/lower2cff.h"
@@ -572,9 +573,16 @@ const Def* World::cast(const Type* to, const Def* from, Debug dbg) {
 }
 
 const Def* World::bitcast(const Type* to, const Def* from, Debug dbg) {
-    if (auto other = from->isa<Bitcast>())
-        if (to == other->type())
-            return other;
+    if (from->type() == to) return from;
+
+    if (auto other = from->isa<Bitcast>()) {
+        // reduce bitcast chains
+        do {
+            if (to == other->type())
+                return other;
+            other = other->op(0)->isa<Bitcast>();
+        } while (other);
+    }
 
     if (auto prim_to = to->isa<PrimType>())
         if (auto prim_from = from->type()->isa<PrimType>())
@@ -858,6 +866,7 @@ void World::cleanup() { cleanup_world(*this); }
 
 void World::opt(bool simple_pe) {
     cleanup();
+    flatten_tuples(*this);
     higher_order_lifting(*this);
     partial_evaluation(*this, simple_pe);
     lower2cff(*this);

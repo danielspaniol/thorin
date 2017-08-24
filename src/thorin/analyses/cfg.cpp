@@ -642,8 +642,13 @@ CFA::CFA(const Scope& scope)
         queue.push(src);
 
         while (!queue.empty()) {
-            for (auto op : pop(queue)->ops())
-                enqueue(op);
+            auto def = pop(queue);
+            if (auto evalop = def->isa<EvalOp>()) {
+                enqueue(evalop->begin()); // ignore end
+            } else {
+                for (auto op : def->ops())
+                    enqueue(op);
+            }
         }
     }
 
@@ -694,6 +699,8 @@ void CFG<forward>::stream_ycomp(std::ostream& out) const {
     );
 }
 
+template<bool forward> const CFNodes& CFG<forward>::preds(const CFNode* n) const { return n ? (forward ? n->preds() : n->succs()) : empty_; }
+template<bool forward> const CFNodes& CFG<forward>::succs(const CFNode* n) const { return n ? (forward ? n->succs() : n->preds()) : empty_; }
 template<bool forward> const DomTreeBase<forward>& CFG<forward>::domtree() const { return lazy_init(this, domtree_); }
 template<bool forward> const LoopTree<forward>& CFG<forward>::looptree() const { return lazy_init(this, looptree_); }
 template<bool forward> const DomFrontierBase<forward>& CFG<forward>::domfrontier() const { return lazy_init(this, domfrontier_); }
