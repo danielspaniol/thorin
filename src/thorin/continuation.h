@@ -268,9 +268,6 @@ struct Call {
     Call(Array<const Def*> ops)
         : ops_(ops)
     {}
-    Call(Array<const Def*>&& ops)
-        : ops_(std::move(ops))
-    {}
     Call(const Call& call)
         : ops_(call.ops())
         , hash_(call.hash_)
@@ -279,8 +276,8 @@ struct Call {
         : ops_(std::move(call.ops_))
         , hash_(call.hash_)
     {}
-    Call(const Continuation* continuation)
-        : ops_(continuation->num_ops())
+    Call(size_t num_ops)
+        : ops_(num_ops)
     {}
 
     Defs ops() const { return ops_; }
