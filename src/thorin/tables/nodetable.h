@@ -4,6 +4,7 @@
 
 // Def
     THORIN_NODE(Continuation, continuation)
+    THORIN_NODE(Closure, clos)
     // PrimOp
         // Literal
             THORIN_NODE(Bottom, bottom)

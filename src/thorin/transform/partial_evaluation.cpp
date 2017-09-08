@@ -74,6 +74,17 @@ private:
     ContinuationMap<bool> top_level_;
 };
 
+class Closure : public Def {
+public:
+    Closure(Continuation* continuation)
+        : Def(Node_Closure, continuation->type(), 1, Debug{})
+    {
+        set_op(0, continuation);
+    }
+
+    Continuation* continuation() const { return op(0)->as_continuation(); }
+};
+
 class PartialEvaluator {
 public:
     struct Context {
