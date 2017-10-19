@@ -37,6 +37,8 @@ public:
 private:
     Env* prev_;
     Def2Def old2new_;
+
+    friend class PartialEvaluator;
 };
 
 class Closure : public Def {
@@ -159,18 +161,10 @@ void PartialEvaluator::eat_pe_info(Continuation* cur) {
 }
 
 void PartialEvaluator::run() {
-    std::vector<Continuation*> externals;
     for (auto external : world().externals()) {
-        externals.push_back(external);
-        top_level_[external] = true;
-    }
-
-    for (auto old_external : externals) {
         Env env;
-        auto new_external = eval(&env, old_external);
-        new_external->make_external();
-        old_external->destroy_body();
-        old_external->replace(new_external);
+        auto new_external = eval(&env, external);
+        assert(new_external == external);
     }
 }
 
@@ -220,35 +214,83 @@ const Def* PartialEvaluator::materialize(Def2Def& old2new, const Def* odef) {
 Continuation* PartialEvaluator::eval(Env* env, Continuation* continuation) {
     if (continuation->empty())
         return continuation;
-    auto new_continuation = continuation->stub();
-    for (size_t i = 0; i != new_continuation->num_params(); ++i)
-        env->insert(continuation->param(i), new_continuation->param(i));
+
+    auto new_continuation = continuation;
+    if (!env->old2new_.empty() || env->prev_ != nullptr) {
+        new_continuation = continuation->stub();
+        for (size_t i = 0; i != new_continuation->num_params(); ++i)
+            env->insert(continuation->param(i), new_continuation->param(i));
+    }
 
     Continuation* cur = continuation;
+    std::vector<const Def*> ops(continuation->ops().begin(), continuation->ops().end());;
 
     while (true) {
-        Call call(cur);
+        assert(!ops.empty());
 
-        for (size_t i = 0, e = call.num_ops(); i != e; ++i)
-            call.op(i) = instantiate(env, cur->op(i));
+        DLOG("cur: {}", cur);
 
-        auto old_callee = call.callee()->isa_continuation();
+        for (size_t i = 0, e = ops.size(); i != e; ++i)
+            ops[i] = instantiate(env, ops[i]);
 
-        if (auto closure = call.callee()->isa<Closure>()) {
+        auto old_callee = ops.front()->isa_continuation();
+        auto args = Defs(ops).skip_front();
+
+        if (auto closure = ops.front()->isa<Closure>()) {
             env = closure->env();
             old_callee = closure->old_continuation();
+        }
+
+        switch (old_callee->intrinsic()) {
+            case Intrinsic::Branch: {
+                if (auto lit = ops[1]->isa<PrimLit>()) {
+                    auto k = lit->value().get_bool() ? ops[2] : ops[3];
+
+                    auto cont = k->as<Closure>()->old_continuation();
+
+                    outf("--- FOLD --- \n");
+                    cur->dump_head();
+                    cur->dump_jump();
+                    cur->jump(cont, {}, cur->jump_debug());
+                    cur->dump_jump();
+                    outf("--- FOLD --- \n");
+
+                    ops.resize(cont->num_ops());
+                    std::copy(cont->ops().begin(), cont->ops().end(), ops.begin());
+                    cur = cont;
+                    continue;
+                }
+                break;
+            }
+            case Intrinsic::Match:
+                assert(false && "TODO");
+#if 0
+                if (old_continuation->num_args() == 2)
+                    return new_continuation->jump(mangle(old_continuation->arg(1)), {}, old_continuation->jump_debug());
+
+                if (auto lit = mangle(old_continuation->arg(0))->isa<PrimLit>()) {
+                    for (size_t i = 2; i < old_continuation->num_args(); i++) {
+                        auto new_arg = mangle(old_continuation->arg(i));
+                        if (world().extract(new_arg, 0_s)->as<PrimLit>() == lit)
+                            return new_continuation->jump(world().extract(new_arg, 1), {}, old_continuation->jump_debug());
+                    }
+                }
+                break;
+#endif
+            default:
+                break;
         }
 
         if (old_callee != nullptr && !old_callee->empty()) {
             env = new Env(env);
 
             bool fold = false;
-            CondEval cond_eval(old_callee, call.args(), top_level_);
+            CondEval cond_eval(old_callee, args, top_level_);
 
             std::vector<const Type*> param_types;
-            for (size_t i = 0, e = call.num_args(); i != e; ++i) {
+            for (size_t i = 0, e = args.size(); i != e; ++i) {
                 if (cond_eval.eval(i)) {
-                    env->insert(old_callee->param(i), call.arg(i));
+                    env->insert(old_callee->param(i), args[i]);
                     fold = true;
                 } else
                     param_types.emplace_back(old_callee->param(i)->type());
@@ -258,29 +300,45 @@ Continuation* PartialEvaluator::eval(Env* env, Continuation* continuation) {
                 auto fn_type = world().fn_type(param_types);
                 auto new_callee = world().continuation(fn_type, old_callee->debug_history());
 
+                std::vector<const Def*> new_args;
                 // map old params to new params
-                for (size_t i = 0, j = 0, e = call.num_args(); i != e; ++i) {
+                for (size_t i = 0, j = 0, e = args.size(); i != e; ++i) {
                     auto old_param = old_callee->param(i);
                     if (!cond_eval.eval(i)) {
                         auto new_param = new_callee->param(j++);
                         env->insert(old_param, new_param);
                         new_param->debug().set(old_param->name());
+                        new_args.push_back(args[i]);
                     }
                 }
+
+                outf("---\n");
+                cur->dump_head();
+                cur->dump_jump();
+                cur->jump(new_callee, new_args, cur->jump_debug());
+                cur->dump_jump();
+                outf("---\n");
 
                 // TODO rewrite pe profile
 
                 cur = new_callee;
+                ops.resize(old_callee->num_ops());
+                std::copy(old_callee->ops().begin(), old_callee->ops().end(), ops.begin());
                 continue;
             }
         }
 
         // materialize closures
         Def2Def old2new;
-        for (size_t i = 0, e = call.num_ops(); i != e; ++i)
-            call.op(i) = materialize(old2new, call.op(i));
+        for (size_t i = 0, e = ops.size(); i != e; ++i)
+            ops[i] = materialize(old2new, ops[i]);
 
-        new_continuation->jump(call.callee(), call.args(), continuation->jump_debug());
+        outf("--- LAST ---\n");
+        cur->dump_head();
+        cur->dump_jump();
+        cur->jump(ops.front(), args, cur->jump_debug());
+        cur->dump_jump();
+        outf("--- LAST ---\n");
         return new_continuation;
     }
 }
@@ -290,6 +348,7 @@ Continuation* PartialEvaluator::eval(Env* env, Continuation* continuation) {
 void partial_evaluation(World& world) {
     world.cleanup();
     VLOG_SCOPE(PartialEvaluator(world).run());
+    world.dump();
 
     world.mark_pe_done();
 
