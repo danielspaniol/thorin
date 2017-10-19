@@ -3,6 +3,7 @@
 #endif
 
 // Def
+    THORIN_NODE(Closure, closure)
     THORIN_NODE(Continuation, continuation)
     // PrimOp
         // Literal

@@ -8,6 +8,57 @@
 
 namespace thorin {
 
+class Env {
+public:
+    Env()
+        : prev_(nullptr)
+    {}
+    Env(Env* prev)
+        : prev_(prev)
+    {}
+
+    const Def* find(const Def* odef) {
+        auto i = old2new_.find(odef);
+        if (i != old2new_.end())
+            return i->second;
+
+        if (prev_ != nullptr)
+            return prev_->find(odef);
+        else
+            return nullptr;
+    }
+
+    const Def* insert(const Def* odef, const Def* ndef) {
+        auto p = old2new_.emplace(odef, ndef);
+        assert_unused(p.second && "odef already as key in old2new_");
+        return ndef;
+    }
+
+private:
+    Env* prev_;
+    Def2Def old2new_;
+};
+
+class Closure : public Def {
+public:
+    Closure(Env* env, Continuation* old_continuation)
+        : Def(Node_Closure, old_continuation->type(), 0, {})
+        , env_(env)
+        , old_continuation_(old_continuation)
+    {}
+
+    Env* env() const { return env_; }
+    Continuation* old_continuation() const { return old_continuation_; }
+    Continuation* new_continuation() const { return new_continuation_; }
+
+private:
+    Env* env_;
+    Continuation* old_continuation_;
+    mutable Continuation* new_continuation_ = nullptr;
+
+    friend class PartialEvaluator;
+};
+
 class PartialEvaluator {
 public:
     PartialEvaluator(World& world)
@@ -16,6 +67,9 @@ public:
 
     World& world() { return world_; }
     void run();
+    Continuation* eval(Env* env, Continuation* continuation);
+    const Def* materialize(Def2Def& old2new, const Def* odef);
+    const Def* instantiate(Env* env, const Def* odef);
     void enqueue(Continuation* continuation) {
         if (done_.emplace(continuation).second)
             queue_.push(continuation);
@@ -28,6 +82,7 @@ private:
     ContinuationSet done_;
     std::queue<Continuation*> queue_;
     ContinuationMap<bool> top_level_;
+    std::deque<Env> envs_;
 };
 
 class CondEval {
@@ -104,48 +159,129 @@ void PartialEvaluator::eat_pe_info(Continuation* cur) {
 }
 
 void PartialEvaluator::run() {
+    std::vector<Continuation*> externals;
     for (auto external : world().externals()) {
-        enqueue(external);
+        externals.push_back(external);
         top_level_[external] = true;
     }
 
-    while (!queue_.empty()) {
-        auto continuation = pop(queue_);
+    for (auto old_external : externals) {
+        Env env;
+        auto new_external = eval(&env, old_external);
+        new_external->make_external();
+        old_external->destroy_body();
+        old_external->replace(new_external);
+    }
+}
 
-        if (auto callee = continuation->callee()->isa_continuation()) {
-            if (callee->intrinsic() == Intrinsic::PeInfo) {
-                eat_pe_info(continuation);
-                continue;
+const Def* PartialEvaluator::instantiate(Env* env, const Def* odef) {
+    if (auto ndef = env->find(odef))
+        return ndef;
+
+    if (auto oprimop = odef->isa<PrimOp>()) {
+        Array<const Def*> nops(oprimop->num_ops());
+        for (size_t i = 0; i != oprimop->num_ops(); ++i)
+            nops[i] = instantiate(env, odef->op(i));
+
+        auto nprimop = oprimop->rebuild(nops);
+        return env->insert(oprimop, nprimop);
+    }
+
+    if (auto ocontinuation = odef->isa_continuation())
+        return env->insert(odef, new Closure(env, ocontinuation));
+
+    return env->insert(odef, odef);
+}
+
+const Def* PartialEvaluator::materialize(Def2Def& old2new, const Def* odef) {
+    if (auto ndef = find(old2new, odef))
+        return ndef;
+
+    if (auto oprimop = odef->isa<PrimOp>()) {
+        Array<const Def*> nops(oprimop->num_ops());
+        for (size_t i = 0; i != oprimop->num_ops(); ++i)
+            nops[i] = materialize(old2new, odef->op(i));
+
+        auto nprimop = oprimop->rebuild(nops);
+        return old2new[oprimop] = nprimop;
+    }
+
+    if (auto closure = odef->isa<Closure>()) {
+        if (auto new_continuation = closure->new_continuation())
+            return old2new[closure] = new_continuation;
+
+        auto new_continuation = eval(closure->env(), closure->old_continuation());
+        return old2new[odef] = closure->new_continuation_ = new_continuation;
+    }
+
+    return old2new[odef] = odef;
+}
+
+Continuation* PartialEvaluator::eval(Env* env, Continuation* continuation) {
+    if (continuation->empty())
+        return continuation;
+    auto new_continuation = continuation->stub();
+    for (size_t i = 0; i != new_continuation->num_params(); ++i)
+        env->insert(continuation->param(i), new_continuation->param(i));
+
+    Continuation* cur = continuation;
+
+    while (true) {
+        Call call(cur);
+
+        for (size_t i = 0, e = call.num_ops(); i != e; ++i)
+            call.op(i) = instantiate(env, cur->op(i));
+
+        auto old_callee = call.callee()->isa_continuation();
+
+        if (auto closure = call.callee()->isa<Closure>()) {
+            env = closure->env();
+            old_callee = closure->old_continuation();
+        }
+
+        if (old_callee != nullptr && !old_callee->empty()) {
+            env = new Env(env);
+
+            bool fold = false;
+            CondEval cond_eval(old_callee, call.args(), top_level_);
+
+            std::vector<const Type*> param_types;
+            for (size_t i = 0, e = call.num_args(); i != e; ++i) {
+                if (cond_eval.eval(i)) {
+                    env->insert(old_callee->param(i), call.arg(i));
+                    fold = true;
+                } else
+                    param_types.emplace_back(old_callee->param(i)->type());
             }
 
-            if (!callee->empty()) {
-                Call call(continuation);
-                call.callee() = callee;
+            if (fold) {
+                auto fn_type = world().fn_type(param_types);
+                auto new_callee = world().continuation(fn_type, old_callee->debug_history());
 
-                bool fold = false;
-                CondEval cond_eval(callee, continuation->args(), top_level_);
-
-                for (size_t i = 0, e = call.num_args(); i != e; ++i) {
-                    if (cond_eval.eval(i)) {
-                        call.arg(i) = continuation->arg(i);
-                        fold = true;
-                    } else
-                        call.arg(i) = nullptr;
+                // map old params to new params
+                for (size_t i = 0, j = 0, e = call.num_args(); i != e; ++i) {
+                    auto old_param = old_callee->param(i);
+                    if (!cond_eval.eval(i)) {
+                        auto new_param = new_callee->param(j++);
+                        env->insert(old_param, new_param);
+                        new_param->debug().set(old_param->name());
+                    }
                 }
 
-                const auto& p = cache_.emplace(call, nullptr);
-                Continuation*& target = p.first->second;
-                // create new specialization if not found in cache
-                if (p.second)
-                    target = drop(call);
+                // TODO rewrite pe profile
 
-                if (fold)
-                    jump_to_dropped_call(continuation, target, call);
+                cur = new_callee;
+                continue;
             }
         }
 
-        for (auto succ : continuation->succs())
-            enqueue(succ);
+        // materialize closures
+        Def2Def old2new;
+        for (size_t i = 0, e = call.num_ops(); i != e; ++i)
+            call.op(i) = materialize(old2new, call.op(i));
+
+        new_continuation->jump(call.callee(), call.args(), continuation->jump_debug());
+        return new_continuation;
     }
 }
 

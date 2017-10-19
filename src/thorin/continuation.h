@@ -287,7 +287,7 @@ struct Call {
     Defs ops() const { return ops_; }
     size_t num_ops() const { return ops().size(); }
     const Def* op(size_t i) const { return ops_[i]; }
-    const Def*& callee(size_t i) { return ops_[i]; }
+    const Def*& op(size_t i) { return ops_[i]; }
     const Def* callee() const { return ops_.front(); }
     const Def*& callee() { return ops_.front(); }
 
