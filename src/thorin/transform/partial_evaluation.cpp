@@ -72,11 +72,18 @@ private:
 
 class Closure : public Def {
 public:
+    Closure(World& world)
+        : Def(Node_Closure, world.fn_type(), 0, {})
+        , parent_(nullptr)
+        , old_continuation_(nullptr)
+    {}
     Closure(const Closure* parent, Continuation* old_continuation)
         : Def(Node_Closure, old_continuation->type(), 0, {})
         , parent_(parent)
         , old_continuation_(old_continuation)
-    {}
+    {
+        parent->insert(old_continuation, this);
+    }
 
     Continuation* old_continuation() const { return old_continuation_; }
     Continuation* new_continuation() const { return new_continuation_; }
@@ -99,12 +106,10 @@ private:
         return ndef;
     }
 
-    //bool in_trace(
-
     const Closure* parent_;
     Continuation* old_continuation_;
+    mutable Continuation* new_continuation_;
     mutable Def2Def old2new_;
-    mutable Continuation* new_continuation_ = nullptr;
 
     friend class PartialEvaluator;
 };
@@ -119,7 +124,7 @@ public:
     void run();
     Continuation* eval(const Closure* closure);
     const Def* materialize(Def2Def& old2new, const Def* odef);
-    const Def* closurefy(const Closure* , const Def* odef);
+    const Def* specialize(const Closure* , const Def* odef);
     void enqueue(Continuation* continuation) {
         if (done_.emplace(continuation).second)
             queue_.push(continuation);
@@ -152,53 +157,10 @@ void PartialEvaluator::eat_pe_info(Continuation* cur) {
 }
 
 void PartialEvaluator::run() {
-    for (auto external : world().externals()) {
-        auto new_external = eval(create_closure(nullptr, external));
-        assert(new_external == external);
-    }
-}
-
-const Def* PartialEvaluator::closurefy(const Closure* closure, const Def* odef) {
-    if (auto ndef = closure->find(odef))
-        return ndef;
-
-    if (auto oprimop = odef->isa<PrimOp>()) {
-        Array<const Def*> nops(oprimop->num_ops());
-        for (size_t i = 0; i != oprimop->num_ops(); ++i)
-            nops[i] = closurefy(closure, odef->op(i));
-
-        auto nprimop = oprimop->rebuild(nops);
-        return closure->insert(oprimop, nprimop);
-    }
-
-    if (auto ocontinuation = odef->isa_continuation())
-        return closure->insert(odef, create_closure(closure, ocontinuation));
-
-    return closure->insert(odef, odef);
-}
-
-const Def* PartialEvaluator::materialize(Def2Def& old2new, const Def* odef) {
-    if (auto ndef = find(old2new, odef))
-        return ndef;
-
-    if (auto oprimop = odef->isa<PrimOp>()) {
-        Array<const Def*> nops(oprimop->num_ops());
-        for (size_t i = 0; i != oprimop->num_ops(); ++i)
-            nops[i] = materialize(old2new, odef->op(i));
-
-        auto nprimop = oprimop->rebuild(nops);
-        return old2new[oprimop] = nprimop;
-    }
-
-    if (auto closure = odef->isa<Closure>()) {
-        if (auto new_continuation = closure->new_continuation())
-            return old2new[closure] = new_continuation;
-
-        auto new_continuation = eval(closure);
-        return old2new[odef] = closure->new_continuation_ = new_continuation;
-    }
-
-    return old2new[odef] = odef;
+    closures_.emplace_back();
+    auto root = &closures_.back();
+    for (auto external : world().externals())
+        eval(create_closure(root, external));
 }
 
 Continuation* PartialEvaluator::eval(const Closure* closure) {
@@ -207,32 +169,18 @@ Continuation* PartialEvaluator::eval(const Closure* closure) {
     if (old_continuation->empty())
         return old_continuation;
 
-    auto new_continuation = old_continuation;
-    if (closure->parent_ != nullptr || !closure->old2new_.empty()) {
-        new_continuation = old_continuation->stub();
-        for (size_t i = 0; i != new_continuation->num_params(); ++i)
-            closure->insert(old_continuation->param(i), new_continuation->param(i));
-    }
+    if (!closure->new_continuation()->empty())
+        return closure->new_continuation();
 
-    assert(closure->new_continuation_ == nullptr);
-    closure->new_continuation_ = new_continuation;
+    closure = closure->parent_; // restore old env
 
-    auto cur = old_continuation;
-    std::vector<const Def*> ops(old_continuation->ops().begin(), old_continuation->ops().end());;
+    Array<const Def*> ops(old_continuation->ops());
+    auto args = ops.skip_front();
+    for (size_t i = 0, e = ops.size(); i != e; ++i)
+        ops[i] = specialize(closure, ops[i]);
 
-    while (true) {
-        assert(!ops.empty());
-
-        DLOG("cur: {}", cur);
-
-        for (size_t i = 0, e = ops.size(); i != e; ++i)
-            ops[i] = closurefy(closure, ops[i]);
-
-        auto old_callee = ops.front()->isa_continuation();
-        auto args = Defs(ops).skip_front();
-
-        if (auto closure = ops.front()->isa<Closure>())
-            old_callee = closure->old_continuation();
+    if (auto callee_closure = ops.front()->isa<Closure>()) {
+        auto callee = closure->old_continuation();
 
 #if 0
         switch (old_callee->intrinsic()) {
@@ -276,68 +224,120 @@ Continuation* PartialEvaluator::eval(const Closure* closure) {
         }
 #endif
 
-        if (old_callee != nullptr && !old_callee->empty()) {
-            closure = create_closure(closure, old_callee);
-
-            bool fold = false;
-            CondEval cond_eval(old_callee, args, top_level_);
-
+        if (!callee->empty()) {
+            CondEval cond_eval(callee, args, top_level_);
             std::vector<const Type*> param_types;
+            bool fold = false;
             for (size_t i = 0, e = args.size(); i != e; ++i) {
                 if (cond_eval.eval(i)) {
-                    closure->insert(old_callee->param(i), args[i]);
                     fold = true;
                 } else
-                    param_types.emplace_back(old_callee->param(i)->type());
+                    param_types.emplace_back(callee->param(i)->type());
             }
 
             if (fold) {
                 auto fn_type = world().fn_type(param_types);
-                auto new_callee = world().continuation(fn_type, old_callee->debug_history());
 
+                closure = create_closure(closure, callee);
+                auto new_continuation = closure->new_continuation_ = world().continuation(fn_type, callee->debug_history());
                 std::vector<const Def*> new_args;
-                // map old params to new params
+
                 for (size_t i = 0, j = 0, e = args.size(); i != e; ++i) {
-                    auto old_param = old_callee->param(i);
-                    if (!cond_eval.eval(i)) {
-                        auto new_param = new_callee->param(j++);
+                    auto old_param = callee->param(i);
+                    if (cond_eval.eval(i))
+                        closure->insert(old_param, args[i]);
+                    else {
+                        auto new_param = new_continuation->param(j++);
                         closure->insert(old_param, new_param);
                         new_param->debug().set(old_param->name());
                         new_args.push_back(args[i]);
                     }
                 }
 
-                outf("---\n");
-                cur->dump_head();
-                cur->dump_jump();
-                cur->jump(new_callee, new_args, cur->jump_debug());
-                cur->dump_jump();
-                outf("---\n");
-                world_.dump();
+                //outf("---\n");
+                //cur->dump_head();
+                //cur->dump_jump();
+                //cur->jump(new_callee, new_args, cur->jump_debug());
+                //cur->dump_jump();
+                //outf("---\n");
+                //world_.dump();
 
-                // TODO rewrite pe profile
+                //// TODO rewrite pe profile
 
-                cur = new_callee;
-                ops.resize(old_callee->num_ops());
-                std::copy(old_callee->ops().begin(), old_callee->ops().end(), ops.begin());
-                continue;
+                //cur = new_callee;
+                //ops.resize(old_callee->num_ops());
+                //std::copy(old_callee->ops().begin(), old_callee->ops().end(), ops.begin());
+                //continue;
             }
         }
 
-        // materialize closures
-        Def2Def old2new;
-        for (size_t i = 0, e = ops.size(); i != e; ++i)
-            ops[i] = materialize(old2new, ops[i]);
-
-        outf("--- LAST ---\n");
-        cur->dump_head();
-        cur->dump_jump();
-        cur->jump(ops.front(), args, cur->jump_debug());
-        world_.dump();
-        cur->dump_jump();
-        outf("--- LAST ---\n");
+        //outf("--- LAST ---\n");
+        //cur->dump_head();
+        //cur->dump_jump();
+        //cur->jump(ops.front(), args, cur->jump_debug());
+        //world_.dump();
+        //cur->dump_jump();
+        //outf("--- LAST ---\n");
         return new_continuation;
     }
+
+
+
+    // materialize closures
+    Def2Def old2new;
+    for (size_t i = 0, e = ops.size(); i != e; ++i)
+        ops[i] = materialize(old2new, ops[i]);
+}
+
+const Def* PartialEvaluator::specialize(const Closure* closure, const Def* old_def) {
+    if (auto new_def = closure->find(old_def))
+        return new_def;
+
+    if (auto old_primop = old_def->isa<PrimOp>()) {
+        Array<const Def*> new_ops(old_primop->num_ops());
+        for (size_t i = 0; i != old_primop->num_ops(); ++i)
+            new_ops[i] = specialize(closure, old_def->op(i));
+
+        auto new_primop = old_primop->rebuild(new_ops);
+        return closure->insert(old_primop, new_primop);
+    }
+
+    if (auto old_continuation = old_def->isa_continuation()) {
+        auto new_closure = create_closure(closure, old_continuation);
+        auto new_continuation = new_closure->new_continuation_ = old_continuation->stub();
+        for (size_t i = 0, e = old_continuation->num_params(); i != e; ++i)
+            new_closure->insert(old_continuation->param(i), new_continuation->param(i));
+        return closure->insert(old_continuation, new_closure);
+    }
+
+    if (auto oclosure = old_def->isa<Closure>())
+        return oclosure->new_continuation();
+
+    return closure->insert(old_def, old_def);
+}
+
+const Def* PartialEvaluator::materialize(Def2Def& old2new, const Def* odef) {
+    if (auto ndef = find(old2new, odef))
+        return ndef;
+
+    if (auto oprimop = odef->isa<PrimOp>()) {
+        Array<const Def*> nops(oprimop->num_ops());
+        for (size_t i = 0; i != oprimop->num_ops(); ++i)
+            nops[i] = materialize(old2new, odef->op(i));
+
+        auto nprimop = oprimop->rebuild(nops);
+        return old2new[oprimop] = nprimop;
+    }
+
+    if (auto closure = odef->isa<Closure>()) {
+        if (auto new_continuation = closure->new_continuation())
+            return old2new[closure] = new_continuation;
+
+        auto new_continuation = eval(closure);
+        return old2new[odef] = closure->new_continuation_ = new_continuation;
+    }
+
+    return old2new[odef] = odef;
 }
 
 //------------------------------------------------------------------------------
