@@ -107,6 +107,15 @@ private:
 class Context {
 public:
     Context() {}
+    Context(Env* parent_env)
+        : env_(std::make_unique<Env>(parent_env))
+        , num_uses_(1)
+    {}
+
+    Continuation* new_continuation() const { return new_continuation_; }
+    Env* env() const { return env_.get(); }
+    int num_uses() const { return num_uses_; }
+    void inc_uses() const { ++num_uses_; }
 
     friend void swap(Context& c1, Context& c2) {
         using std::swap;
@@ -116,9 +125,9 @@ public:
     }
 
 private:
-    Continuation* new_continuation_;
+    Continuation* new_continuation_ = nullptr;
     std::unique_ptr<Env> env_;
-    int num_uses_;
+    mutable int num_uses_;
 };
 
 class Closure : public Def {
@@ -135,18 +144,31 @@ private:
     };
 
 public:
-    Closure(Env* env, Continuation* continuation)
+    Closure(Env* parent_env, Continuation* continuation)
         : Def(Node_Closure, continuation->type(), 0, {})
-        , env_(env)
+        , parent_env_(parent_env)
         , continuation_(continuation)
     {
-        env->insert_old2tmp(continuation, this);
+        parent_env->insert_old2tmp(continuation, this);
     }
 
     Continuation* continuation() const { return continuation_; }
+    void add_context(Defs args) {
+        auto p = args2context_.emplace(Array<const Def*>(args), Context(parent_env_));
+        auto& context = p.first->second;
+        if (!p.second)
+            context.inc_uses();
+        else {
+            auto env = context.env();
+            for (size_t i = 0, e = args.size(); i != e; ++i) {
+                if (args[i] != nullptr)
+                    env->insert_old2tmp(continuation()->param(i), args[i]);
+            }
+        }
+    }
 
 private:
-    Env* env_;
+    Env* parent_env_;
     Continuation* continuation_;
     HashMap<Array<const Def*>, Context, ArgsHash> args2context_;
 
@@ -154,6 +176,23 @@ private:
 };
 
 class PartialEvaluator {
+private:
+    struct Todo {
+    public:
+        Todo() = delete;
+        Todo(const Todo&) = delete;
+        Todo(Todo&&) = delete;
+
+        Todo(Continuation* new_continuation, Array<const Def*>&& tmp_ops)
+            : new_continuation_(new_continuation)
+            , tmp_ops_(std::move(tmp_ops))
+        {}
+
+    private:
+        Continuation* new_continuation_;
+        Array<const Def*> tmp_ops_;
+    };
+
 public:
     PartialEvaluator(World& old_world)
         : old_world_(old_world)
@@ -168,10 +207,12 @@ private:
     Continuation* eval(const Closure* closure);
     const Def* materialize(Def2Def& old2new, const Def* odef);
     const Def* specialize(const Closure* , const Def* odef);
-    void enqueue(Continuation* continuation) {
-        if (done_.emplace(continuation).second)
-            queue_.push(continuation);
-    }
+
+    //void enqueue(Continuation* continuation) {
+        //if (done_.emplace(continuation).second)
+            //queue_.push(continuation);
+    //}
+
     void eat_pe_info(Continuation*);
     const Closure* create_closure(Env* env, Continuation* continuation) {
         closures_.emplace_back(env, continuation);
@@ -183,19 +224,22 @@ private:
 
     World& old_world_;
     World new_world_;
-    ContinuationSet done_;
+    //ContinuationSet done_;
     std::queue<Continuation*> queue_;
     ContinuationMap<bool> top_level_;
     std::deque<Closure> closures_;
 };
 
 void PartialEvaluator::run() {
-    Env root_env(nullptr);
-    for (auto external : old_world().externals()) {}
+    //Env root_env(nullptr);
+    //for (auto external : old_world().externals()) {}
         //eval(create_closure(&root_env, external));
 }
 
 #if 0
+Continuation* PartialEvaluator::eval(const Closure* closure, Defs args) {
+}
+
 
 Continuation* PartialEvaluator::eval(const Closure* closure, Defs args) {
     auto old_continuation = closure->old_continuation();
