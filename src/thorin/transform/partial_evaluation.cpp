@@ -122,6 +122,18 @@ private:
 };
 
 class Closure : public Def {
+private:
+    struct ArgsHash {
+        static uint64_t hash(Defs args) {
+            auto hash = hash_begin();
+            for (auto arg : args)
+                hash = hash_combine(hash, arg ? arg->gid() : 0);
+            return hash;
+        }
+        static bool eq(Defs args1, Defs args2) { return args1 == args2; }
+        static Array<const Def*> sentinel() { return Array<const Def*>(); }
+    };
+
 public:
     Closure(Env* env, Continuation* continuation)
         : Def(Node_Closure, continuation->type(), 0, {})
@@ -136,7 +148,7 @@ public:
 private:
     Env* env_;
     Continuation* continuation_;
-    HashMap<Call, Context> call2context_;
+    HashMap<Array<const Def*>, Context, ArgsHash> args2context_;
 
     friend class PartialEvaluator;
 };
@@ -161,9 +173,12 @@ private:
             queue_.push(continuation);
     }
     void eat_pe_info(Continuation*);
-    const Closure* create_closure(const Closure* parent, Continuation* continuation) {
-        closures_.emplace_back(parent, continuation);
+    const Closure* create_closure(Env* env, Continuation* continuation) {
+        closures_.emplace_back(env, continuation);
         return &closures_.back();
+    }
+
+    void enqueue() {
     }
 
     World& old_world_;
@@ -176,11 +191,13 @@ private:
 
 void PartialEvaluator::run() {
     Env root_env(nullptr);
-    for (auto external : old_world().externals())
-        eval(create_closure(root, external));
+    for (auto external : old_world().externals()) {}
+        //eval(create_closure(&root_env, external));
 }
 
-Continuation* PartialEvaluator::eval(const Closure* closure) {
+#if 0
+
+Continuation* PartialEvaluator::eval(const Closure* closure, Defs args) {
     auto old_continuation = closure->old_continuation();
 
     if (old_continuation->empty())
@@ -198,48 +215,6 @@ Continuation* PartialEvaluator::eval(const Closure* closure) {
 
     if (auto callee_closure = ops.front()->isa<Closure>()) {
         auto callee = closure->old_continuation();
-
-#if 0
-        switch (old_callee->intrinsic()) {
-            case Intrinsic::Branch: {
-                if (auto lit = ops[1]->isa<PrimLit>()) {
-                    auto k = lit->value().get_bool() ? ops[2] : ops[3];
-
-                    auto cont = k->as<Closure>()->old_continuation();
-
-                    outf("--- FOLD --- \n");
-                    cur->dump_head();
-                    cur->dump_jump();
-                    cur->jump(cont, {}, cur->jump_debug());
-                    cur->dump_jump();
-                    outf("--- FOLD --- \n");
-
-                    ops.resize(cont->num_ops());
-                    std::copy(cont->ops().begin(), cont->ops().end(), ops.begin());
-                    cur = cont;
-                    continue;
-                }
-                break;
-            }
-            case Intrinsic::Match:
-                assert(false && "TODO");
-#if 0
-                if (old_continuation->num_args() == 2)
-                    return new_continuation->jump(mangle(old_continuation->arg(1)), {}, old_continuation->jump_debug());
-
-                if (auto lit = mangle(old_continuation->arg(0))->isa<PrimLit>()) {
-                    for (size_t i = 2; i < old_continuation->num_args(); i++) {
-                        auto new_arg = mangle(old_continuation->arg(i));
-                        if (world().extract(new_arg, 0_s)->as<PrimLit>() == lit)
-                            return new_continuation->jump(world().extract(new_arg, 1), {}, old_continuation->jump_debug());
-                    }
-                }
-                break;
-#endif
-            default:
-                break;
-        }
-#endif
 
         if (!callee->empty()) {
             CondEval cond_eval(callee, args, top_level_);
@@ -297,8 +272,6 @@ Continuation* PartialEvaluator::eval(const Closure* closure) {
         //outf("--- LAST ---\n");
         return new_continuation;
     }
-
-
 
     // materialize closures
     Def2Def old2new;
@@ -367,6 +340,8 @@ void PartialEvaluator::eat_pe_info(Continuation* cur) {
     // always re-insert into queue because we've changed cur's jump
     queue_.push(cur);
 }
+
+#endif
 
 //------------------------------------------------------------------------------
 
