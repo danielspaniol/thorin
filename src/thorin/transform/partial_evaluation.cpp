@@ -231,8 +231,8 @@ private:
 };
 
 void PartialEvaluator::run() {
-    //Env root_env(nullptr);
-    //for (auto external : old_world().externals()) {}
+    Env root_env(nullptr);
+    for (auto external : old_world().externals()) {}
         //eval(create_closure(&root_env, external));
 }
 
@@ -250,8 +250,7 @@ void PartialEvaluator::eval(const Closure* closure, Defs args) {
     // TODO oracle
 
     if (auto callee_closure = tmp.front()->isa<Closure>()) {
-        if (auto callee_continuation = callee->continuation()) {
-        }
+        auto callee_continuation = callee_closure->continuation();
     }
 }
 
