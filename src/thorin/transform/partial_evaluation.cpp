@@ -70,58 +70,89 @@ private:
     ContinuationMap<bool>& top_level_;
 };
 
-class Closure : public Def {
+class Env {
 public:
-    Closure(World& world)
-        : Def(Node_Closure, world.fn_type(), 0, {})
-        , parent_(nullptr)
-        , old_continuation_(nullptr)
+    Env(Env* parent)
+        : parent_(parent)
     {}
-    Closure(const Closure* parent, Continuation* old_continuation)
-        : Def(Node_Closure, old_continuation->type(), 0, {})
-        , parent_(parent)
-        , old_continuation_(old_continuation)
-    {
-        parent->insert(old_continuation, this);
+
+    const Def* insert_old2tmp(const Def* old_def, const Def* tmp_def) {
+        auto p = old2tmp_.emplace(old_def, tmp_def);
+        assert_unused(p.second && "old_def already as key in old2tmp_");
+        return tmp_def;
+    }
+    const Def* insert_tmp2new(const Def* tmp_def, const Def* new_def) {
+        auto p = tmp2new_.emplace(tmp_def, new_def);
+        assert_unused(p.second && "tmp_def already as key in tmp2new_");
+        return new_def;
     }
 
-    Continuation* old_continuation() const { return old_continuation_; }
-    Continuation* new_continuation() const { return new_continuation_; }
-
-private:
-    const Def* find(const Def* odef) const {
-        auto i = old2new_.find(odef);
-        if (i != old2new_.end())
+    const Def* find_old2tmp(const Def* old_def) const {
+        auto i = old2tmp_.find(old_def);
+        if (i != old2tmp_.end())
             return i->second;
 
         if (parent_ != nullptr)
-            return parent_->find(odef);
+            return parent_->find_old2tmp(old_def);
         else
             return nullptr;
     }
 
-    const Def* insert(const Def* odef, const Def* ndef) const {
-        auto p = old2new_.emplace(odef, ndef);
-        assert_unused(p.second && "odef already as key in old2new_");
-        return ndef;
+private:
+    Env* parent_;
+    Def2Def old2tmp_;
+    Def2Def tmp2new_;
+};
+
+class Context {
+public:
+    Context() {}
+
+    friend void swap(Context& c1, Context& c2) {
+        using std::swap;
+        swap(c1.new_continuation_, c2.new_continuation_);
+        swap(c1.env_,              c2.env_);
+        swap(c1.num_uses_,         c2.num_uses_);
     }
 
-    const Closure* parent_;
-    Continuation* old_continuation_;
-    mutable Continuation* new_continuation_;
-    mutable Def2Def old2new_;
+private:
+    Continuation* new_continuation_;
+    std::unique_ptr<Env> env_;
+    int num_uses_;
+};
+
+class Closure : public Def {
+public:
+    Closure(Env* env, Continuation* continuation)
+        : Def(Node_Closure, continuation->type(), 0, {})
+        , env_(env)
+        , continuation_(continuation)
+    {
+        env->insert_old2tmp(continuation, this);
+    }
+
+    Continuation* continuation() const { return continuation_; }
+
+private:
+    Env* env_;
+    Continuation* continuation_;
+    HashMap<Call, Context> call2context_;
 
     friend class PartialEvaluator;
 };
 
 class PartialEvaluator {
 public:
-    PartialEvaluator(World& world)
-        : world_(world)
+    PartialEvaluator(World& old_world)
+        : old_world_(old_world)
+        , new_world_(old_world.name())
     {}
 
-    World& world() { return world_; }
+    World& old_world() { return old_world_; }
+    World& new_world() { return new_world_; }
     void run();
+
+private:
     Continuation* eval(const Closure* closure);
     const Def* materialize(Def2Def& old2new, const Def* odef);
     const Def* specialize(const Closure* , const Def* odef);
@@ -130,36 +161,22 @@ public:
             queue_.push(continuation);
     }
     void eat_pe_info(Continuation*);
-
-private:
     const Closure* create_closure(const Closure* parent, Continuation* continuation) {
         closures_.emplace_back(parent, continuation);
         return &closures_.back();
     }
 
-    World& world_;
-    HashMap<Call, Continuation*> cache_;
+    World& old_world_;
+    World new_world_;
     ContinuationSet done_;
     std::queue<Continuation*> queue_;
     ContinuationMap<bool> top_level_;
     std::deque<Closure> closures_;
 };
 
-void PartialEvaluator::eat_pe_info(Continuation* cur) {
-    assert(cur->arg(1)->type() == world().ptr_type(world().indefinite_array_type(world().type_pu8())));
-    auto msg = cur->arg(1)->as<Bitcast>()->from()->as<Global>()->init()->as<DefiniteArray>();
-    ILOG(cur->callee(), "pe_info: {}: {}", msg->as_string(), cur->arg(2));
-    auto next = cur->arg(3);
-    cur->jump(next, {cur->arg(0)}, cur->jump_debug());
-
-    // always re-insert into queue because we've changed cur's jump
-    queue_.push(cur);
-}
-
 void PartialEvaluator::run() {
-    closures_.emplace_back();
-    auto root = &closures_.back();
-    for (auto external : world().externals())
+    Env root_env(nullptr);
+    for (auto external : old_world().externals())
         eval(create_closure(root, external));
 }
 
@@ -338,6 +355,17 @@ const Def* PartialEvaluator::materialize(Def2Def& old2new, const Def* odef) {
     }
 
     return old2new[odef] = odef;
+}
+
+void PartialEvaluator::eat_pe_info(Continuation* cur) {
+    assert(cur->arg(1)->type() == world().ptr_type(world().indefinite_array_type(world().type_pu8())));
+    auto msg = cur->arg(1)->as<Bitcast>()->from()->as<Global>()->init()->as<DefiniteArray>();
+    ILOG(cur->callee(), "pe_info: {}: {}", msg->as_string(), cur->arg(2));
+    auto next = cur->arg(3);
+    cur->jump(next, {cur->arg(0)}, cur->jump_debug());
+
+    // always re-insert into queue because we've changed cur's jump
+    queue_.push(cur);
 }
 
 //------------------------------------------------------------------------------
