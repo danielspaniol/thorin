@@ -67,7 +67,7 @@ private:
     Continuation* callee_;
     Defs args_;
     Def2Def old2new_;
-    ContinuationMap<bool> top_level_;
+    ContinuationMap<bool>& top_level_;
 };
 
 class Closure : public Def {
