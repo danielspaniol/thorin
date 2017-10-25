@@ -204,9 +204,9 @@ public:
     void run();
 
 private:
-    Continuation* eval(const Closure* closure);
+    void eval(const Closure* closure, Defs args);
     const Def* materialize(Def2Def& old2new, const Def* odef);
-    const Def* specialize(const Closure* , const Def* odef);
+    const Def* specialize(Env* env, const Def* odef);
 
     //void enqueue(Continuation* continuation) {
         //if (done_.emplace(continuation).second)
@@ -236,11 +236,47 @@ void PartialEvaluator::run() {
         //eval(create_closure(&root_env, external));
 }
 
-#if 0
-Continuation* PartialEvaluator::eval(const Closure* closure, Defs args) {
+void PartialEvaluator::eval(const Closure* closure, Defs args) {
+    auto i = closure->args2context_.find(args);
+    assert(i != closure->args2context_.end());
+    auto env = i->second.env();
+
+    std::vector<const Def*> tmp;
+    for (size_t i = 0, e = args.size(); i != e; ++i) {
+        if (args[i] != nullptr)
+            tmp.emplace_back(specialize(env, args[i]));
+    }
+
+    // TODO oracle
+
+    if (auto callee_closure = tmp.front()->isa<Closure>()) {
+        if (auto callee_continuation = callee->continuation()) {
+        }
+    }
 }
 
+const Def* PartialEvaluator::specialize(Env* env, const Def* old_def) {
+    assert(!old_def->isa<Closure>());
 
+    if (auto new_def = env->find_old2tmp(old_def))
+        return new_def;
+
+    if (auto old_primop = old_def->isa<PrimOp>()) {
+        Array<const Def*> new_ops(old_primop->num_ops());
+        for (size_t i = 0; i != old_primop->num_ops(); ++i)
+            new_ops[i] = specialize(env, old_def->op(i));
+
+        auto new_primop = old_primop->rebuild(new_ops);
+        return env->insert_old2tmp(old_primop, new_primop);
+    }
+
+    if (auto old_continuation = old_def->isa_continuation())
+        return create_closure(env, old_continuation);
+
+    return old_def;
+}
+
+#if 0
 Continuation* PartialEvaluator::eval(const Closure* closure, Defs args) {
     auto old_continuation = closure->old_continuation();
 
@@ -321,33 +357,6 @@ Continuation* PartialEvaluator::eval(const Closure* closure, Defs args) {
     Def2Def old2new;
     for (size_t i = 0, e = ops.size(); i != e; ++i)
         ops[i] = materialize(old2new, ops[i]);
-}
-
-const Def* PartialEvaluator::specialize(const Closure* closure, const Def* old_def) {
-    if (auto new_def = closure->find(old_def))
-        return new_def;
-
-    if (auto old_primop = old_def->isa<PrimOp>()) {
-        Array<const Def*> new_ops(old_primop->num_ops());
-        for (size_t i = 0; i != old_primop->num_ops(); ++i)
-            new_ops[i] = specialize(closure, old_def->op(i));
-
-        auto new_primop = old_primop->rebuild(new_ops);
-        return closure->insert(old_primop, new_primop);
-    }
-
-    if (auto old_continuation = old_def->isa_continuation()) {
-        auto new_closure = create_closure(closure, old_continuation);
-        auto new_continuation = new_closure->new_continuation_ = old_continuation->stub();
-        for (size_t i = 0, e = old_continuation->num_params(); i != e; ++i)
-            new_closure->insert(old_continuation->param(i), new_continuation->param(i));
-        return closure->insert(old_continuation, new_closure);
-    }
-
-    if (auto oclosure = old_def->isa<Closure>())
-        return oclosure->new_continuation();
-
-    return closure->insert(old_def, old_def);
 }
 
 const Def* PartialEvaluator::materialize(Def2Def& old2new, const Def* odef) {
