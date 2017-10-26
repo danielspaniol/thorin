@@ -210,6 +210,8 @@ private:
     private:
         Continuation* parent_continuation_;
         Array<const Def*> tmp_ops_;
+
+        friend class PartialEvaluator;
     };
 
 public:
@@ -223,16 +225,12 @@ public:
     void run();
 
 private:
+    void eval(const Closure* closure) { eval(closure, Array<const Def*>(closure->continuation()->num_args())); }
     void eval(const Closure* closure, Defs args);
     const Def* materialize(Def2Def& old2new, const Def* odef);
     const Def* specialize(Env* env, const Def* odef);
     void residualize(Continuation* new_parent_continuation, const Closure* closure, Defs args);
     const Def* residualize(Env* env, const Def* tmp_def);
-
-    //void enqueue(Continuation* continuation) {
-        //if (done_.emplace(continuation).second)
-            //queue_.push(continuation);
-    //}
 
     void eat_pe_info(Continuation*);
     const Closure* create_closure(Env* env, Continuation* continuation) {
@@ -240,7 +238,8 @@ private:
         return &closures_.back();
     }
 
-    void enqueue() {
+    void enqueue(Continuation* parent_continuation, Array<const Def*>&& tmp_ops) {
+        queue_.emplace(parent_continuation, std::move(tmp_ops));
     }
 
     const Type* import(const Type* old_type) { return importer_.import(old_type); }
@@ -254,9 +253,34 @@ private:
 };
 
 void PartialEvaluator::run() {
-    //Env root_env(nullptr);
-    //for (auto external : old_world().externals()) {}
-        //eval(create_closure(&root_env, external));
+    Env root_env(nullptr);
+    for (auto external : old_world().externals()) {
+        residualize(nullptr, create_closure(&root_env, external), Array<const Def*>(external->num_params()));
+
+        while (!queue_.empty()) {
+            auto& todo = queue_.back();
+            queue_.pop();
+            auto closure = todo.tmp_ops_.front()->as<Closure>();
+            auto args = todo.tmp_ops_.skip_front();
+            assert(closure->args2context_.contains(args));
+            auto context = closure->args2context(args);
+            if (context->num_uses() == 1) {
+                context->new_continuation_ = todo.parent_continuation_;
+                eval(closure, args);
+            } else
+                residualize(todo.parent_continuation_, closure, args);
+        }
+    }
+
+    swap(new_world(), old_world());
+    new_world().dump();
+
+    new_world().mark_pe_done();
+
+    for (auto continuation : old_world().continuations())
+        continuation->destroy_pe_profile();
+
+    new_world().cleanup();
 }
 
 void PartialEvaluator::eval(const Closure* closure, Defs args) {
@@ -271,12 +295,11 @@ void PartialEvaluator::eval(const Closure* closure, Defs args) {
 
     if (auto callee_closure = tmp_ops.front()->isa<Closure>()) {
         auto callee_continuation = callee_closure->continuation();
-        // TODO specialization oracle and other must-residualize cases
-        if (callee_continuation->empty()) {
-            // TODO residualize
+        if (callee_continuation->empty()) { // TODO || !specialization_oracle(tmp_ops) || other must-residualize cases
+            residualize(new_continuation, callee_closure, tmp_ops.skip_front());
         } else {
             callee_closure->args2context(tmp_ops.skip_front());
-            queue_.emplace(new_continuation, std::move(tmp_ops));
+            enqueue(new_continuation, std::move(tmp_ops));
         }
     }
 }
@@ -306,27 +329,38 @@ void PartialEvaluator::residualize(Continuation* new_parent_continuation, const 
     auto callee = closure->continuation();
     auto context = closure->args2context(args);
 
-    auto& new_continuation = context->new_continuation_;
+    auto new_continuation = context->new_continuation_;
     if (new_continuation == nullptr) {
-        std::vector<const Type*> new_param_types;
-        for (size_t i = 0, e = args.size(); i != e; ++i) {
+        if (callee->empty()) {
+            new_continuation = importer_.import(callee)->as<Continuation>();
+        } else {
+            std::vector<const Type*> new_param_types;
+            for (size_t i = 0, e = args.size(); i != e; ++i) {
+                if (args[i] == nullptr)
+                    new_param_types.emplace_back(import(callee->param(i)->type()));
+            }
+
+            auto fn_type = new_world().fn_type(new_param_types);
+            new_continuation = new_world().continuation(fn_type, callee->debug_history());
+
+            for (size_t i = 0, e = args.size(); i != e; ++i) {
+                if (args[i] == nullptr)
+                    context->env()->insert_tmp2new(callee->param(i), new_continuation->param(i));
+            }
+
+            eval(closure, args);
+        }
+    }
+
+    if (new_parent_continuation != nullptr) {
+        Array<const Def*> new_args(new_continuation->num_params());
+        for (size_t i = 0, j = 0, e = new_args.size(); i != e; ++i) {
             if (args[i] == nullptr)
-                new_param_types.emplace_back(import(callee->param(i)->type()));
+                new_args[j++] = residualize(context->env(), context->env()->find_old2tmp(new_parent_continuation->arg(i)));
         }
 
-        auto fn_type = new_world().fn_type(new_param_types);
-        new_continuation = new_world().continuation(fn_type, callee->debug_history());
-
-        eval(closure, args);
+        new_parent_continuation->jump(new_continuation, new_args, new_parent_continuation->jump_debug());
     }
-
-    Array<const Def*> new_args(new_continuation->num_params());
-    for (size_t i = 0, j = 0, e = new_args.size(); i != e; ++i) {
-        if (args[i] == nullptr)
-            new_args[j++] = residualize(context->env(), context->env()->find_old2tmp(new_parent_continuation->arg(i)));
-    }
-
-    new_parent_continuation->jump(new_continuation, new_args, new_parent_continuation->jump_debug());
 }
 
 const Def* PartialEvaluator::residualize(Env* env, const Def* tmp_def) {
@@ -334,6 +368,8 @@ const Def* PartialEvaluator::residualize(Env* env, const Def* tmp_def) {
 
     if (auto new_def = env->find_tmp2new(tmp_def))
         return new_def;
+
+    assertf(!tmp_def->isa<Param>(), "params must have been built in the new world already when building their continuation");
 
     if (auto tmp_primop = tmp_def->isa<PrimOp>()) {
         Array<const Def*> new_ops(tmp_primop->num_ops());
@@ -351,12 +387,11 @@ const Def* PartialEvaluator::residualize(Env* env, const Def* tmp_def) {
         if (new_continuation == nullptr) {
             auto fn_type = import(tmp_closure->continuation()->type())->as<FnType>();
             new_continuation = new_world().continuation(fn_type, tmp_closure->continuation()->debug_history());
+            eval(tmp_closure, Array<const Def*>(new_continuation->num_params()));
         }
-
-
+        return env->insert_tmp2new(tmp_closure, new_continuation);
     }
-
-    return tmp_def;
+    THORIN_UNREACHABLE;
 }
 
 #if 0
@@ -484,14 +519,6 @@ void PartialEvaluator::eat_pe_info(Continuation* cur) {
 void partial_evaluation(World& world) {
     world.cleanup();
     VLOG_SCOPE(PartialEvaluator(world).run());
-    world.dump();
-
-    world.mark_pe_done();
-
-    for (auto continuation : world.continuations())
-        continuation->destroy_pe_profile();
-
-    world.cleanup();
 }
 
 //------------------------------------------------------------------------------
