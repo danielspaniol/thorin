@@ -172,15 +172,12 @@ public:
     Continuation* continuation() const { return continuation_; }
 
     Context* args2context() const { return args2context(Array<const Def*>(continuation()->num_params())); }
-    template<bool must_exist = false>
     Context* args2context(Defs args) const {
         auto p = args2context_.emplace(Array<const Def*>(args), std::make_unique<Context>(parent_env_));
-        assert(!must_exist || !p.second);
-
         auto context = p.first->second.get();
-        if (!p.second) {
+        if (!p.second)
             context->inc_uses();
-        } else {
+        else {
             auto env = context->env();
             for (size_t i = 0, e = args.size(); i != e; ++i) {
                 if (args[i] != nullptr)
@@ -290,7 +287,8 @@ void PartialEvaluator::run() {
 }
 
 void PartialEvaluator::eval(const Closure* closure, Defs args) {
-    auto context = closure->args2context<true>(args);
+    auto context = closure->args2context(args);
+    assert(context->num_uses() > 1 && "context must have existed beforehand");
     auto new_continuation = context->new_continuation();
     assert(new_continuation != nullptr);
 
