@@ -2,6 +2,7 @@
 #include "thorin/world.h"
 #include "thorin/analyses/cfg.h"
 #include "thorin/analyses/free_defs.h"
+#include "thorin/transform/importer.h"
 #include "thorin/transform/mangle.h"
 #include "thorin/util/hash.h"
 #include "thorin/util/log.h"
@@ -97,6 +98,16 @@ public:
         else
             return nullptr;
     }
+    const Def* find_tmp2new(const Def* tmp_def) const {
+        auto i = tmp2new_.find(tmp_def);
+        if (i != tmp2new_.end())
+            return i->second;
+
+        if (parent_ != nullptr)
+            return parent_->find_tmp2new(tmp_def);
+        else
+            return nullptr;
+    }
 
 private:
     Env* parent_;
@@ -128,6 +139,8 @@ private:
     Continuation* new_continuation_ = nullptr;
     std::unique_ptr<Env> env_;
     mutable int num_uses_;
+
+    friend class PartialEvaluator;
 };
 
 class Closure : public Def {
@@ -153,24 +166,30 @@ public:
     }
 
     Continuation* continuation() const { return continuation_; }
-    void add_context(Defs args) {
-        auto p = args2context_.emplace(Array<const Def*>(args), Context(parent_env_));
-        auto& context = p.first->second;
-        if (!p.second)
-            context.inc_uses();
-        else {
-            auto env = context.env();
+
+    Context* args2context() const { return args2context(Array<const Def*>(continuation()->num_args())); }
+    template<bool must_exist = false>
+    Context* args2context(Defs args) const {
+        auto p = args2context_.emplace(Array<const Def*>(args), std::make_unique<Context>(parent_env_));
+        assert(!must_exist || !p.second);
+
+        auto context = p.first->second.get();
+        if (!p.second) {
+            context->inc_uses();
+        } else {
+            auto env = context->env();
             for (size_t i = 0, e = args.size(); i != e; ++i) {
                 if (args[i] != nullptr)
                     env->insert_old2tmp(continuation()->param(i), args[i]);
             }
         }
+        return context;
     }
 
 private:
     Env* parent_env_;
     Continuation* continuation_;
-    HashMap<Array<const Def*>, Context, ArgsHash> args2context_;
+    mutable HashMap<Array<const Def*>, std::unique_ptr<Context>, ArgsHash> args2context_;
 
     friend class PartialEvaluator;
 };
@@ -183,30 +202,32 @@ private:
         Todo(const Todo&) = delete;
         Todo(Todo&&) = delete;
 
-        Todo(Continuation* new_continuation, Array<const Def*>&& tmp_ops)
-            : new_continuation_(new_continuation)
+        Todo(Continuation* parent_continuation, Array<const Def*>&& tmp_ops)
+            : parent_continuation_(parent_continuation)
             , tmp_ops_(std::move(tmp_ops))
         {}
 
     private:
-        Continuation* new_continuation_;
+        Continuation* parent_continuation_;
         Array<const Def*> tmp_ops_;
     };
 
 public:
     PartialEvaluator(World& old_world)
         : old_world_(old_world)
-        , new_world_(old_world.name())
+        , importer_(old_world)
     {}
 
     World& old_world() { return old_world_; }
-    World& new_world() { return new_world_; }
+    World& new_world() { return importer_.world(); }
     void run();
 
 private:
     void eval(const Closure* closure, Defs args);
     const Def* materialize(Def2Def& old2new, const Def* odef);
     const Def* specialize(Env* env, const Def* odef);
+    void residualize(Continuation* new_parent_continuation, const Closure* closure, Defs args);
+    const Def* residualize(Env* env, const Def* tmp_def);
 
     //void enqueue(Continuation* continuation) {
         //if (done_.emplace(continuation).second)
@@ -222,57 +243,120 @@ private:
     void enqueue() {
     }
 
+    const Type* import(const Type* old_type) { return importer_.import(old_type); }
+
     World& old_world_;
-    World new_world_;
+    Importer importer_;
     //ContinuationSet done_;
-    std::queue<Continuation*> queue_;
+    std::queue<Todo> queue_;
     ContinuationMap<bool> top_level_;
     std::deque<Closure> closures_;
 };
 
 void PartialEvaluator::run() {
-    Env root_env(nullptr);
-    for (auto external : old_world().externals()) {}
+    //Env root_env(nullptr);
+    //for (auto external : old_world().externals()) {}
         //eval(create_closure(&root_env, external));
 }
 
 void PartialEvaluator::eval(const Closure* closure, Defs args) {
-    auto i = closure->args2context_.find(args);
-    assert(i != closure->args2context_.end());
-    auto env = i->second.env();
+    auto context = closure->args2context<true>(args);
+    auto new_continuation = context->new_continuation();
+    assert(new_continuation != nullptr);
 
-    std::vector<const Def*> tmp;
-    for (size_t i = 0, e = args.size(); i != e; ++i) {
-        if (args[i] != nullptr)
-            tmp.emplace_back(specialize(env, args[i]));
-    }
+    auto old_continuation = closure->continuation();
+    Array<const Def*> tmp_ops(old_continuation->num_ops(), [&] (auto i) {
+        return specialize(context->env(), old_continuation->op(i));
+    });
 
-    // TODO oracle
-
-    if (auto callee_closure = tmp.front()->isa<Closure>()) {
+    if (auto callee_closure = tmp_ops.front()->isa<Closure>()) {
         auto callee_continuation = callee_closure->continuation();
+        // TODO specialization oracle and other must-residualize cases
+        if (callee_continuation->empty()) {
+            // TODO residualize
+        } else {
+            callee_closure->args2context(tmp_ops.skip_front());
+            queue_.emplace(new_continuation, std::move(tmp_ops));
+        }
     }
 }
 
 const Def* PartialEvaluator::specialize(Env* env, const Def* old_def) {
     assert(!old_def->isa<Closure>());
 
-    if (auto new_def = env->find_old2tmp(old_def))
-        return new_def;
+    if (auto tmp_def = env->find_old2tmp(old_def))
+        return tmp_def;
 
     if (auto old_primop = old_def->isa<PrimOp>()) {
-        Array<const Def*> new_ops(old_primop->num_ops());
+        Array<const Def*> tmp_ops(old_primop->num_ops());
         for (size_t i = 0; i != old_primop->num_ops(); ++i)
-            new_ops[i] = specialize(env, old_def->op(i));
+            tmp_ops[i] = specialize(env, old_def->op(i));
 
-        auto new_primop = old_primop->rebuild(new_ops);
-        return env->insert_old2tmp(old_primop, new_primop);
+        auto tmp_primop = old_primop->rebuild(tmp_ops);
+        return env->insert_old2tmp(old_primop, tmp_primop);
     }
 
     if (auto old_continuation = old_def->isa_continuation())
         return create_closure(env, old_continuation);
 
     return old_def;
+}
+
+void PartialEvaluator::residualize(Continuation* new_parent_continuation, const Closure* closure, Defs args) {
+    auto callee = closure->continuation();
+    auto context = closure->args2context(args);
+
+    auto& new_continuation = context->new_continuation_;
+    if (new_continuation == nullptr) {
+        std::vector<const Type*> new_param_types;
+        for (size_t i = 0, e = args.size(); i != e; ++i) {
+            if (args[i] == nullptr)
+                new_param_types.emplace_back(import(callee->param(i)->type()));
+        }
+
+        auto fn_type = new_world().fn_type(new_param_types);
+        new_continuation = new_world().continuation(fn_type, callee->debug_history());
+
+        eval(closure, args);
+    }
+
+    Array<const Def*> new_args(new_continuation->num_params());
+    for (size_t i = 0, j = 0, e = new_args.size(); i != e; ++i) {
+        if (args[i] == nullptr)
+            new_args[j++] = residualize(context->env(), context->env()->find_old2tmp(new_parent_continuation->arg(i)));
+    }
+
+    new_parent_continuation->jump(new_continuation, new_args, new_parent_continuation->jump_debug());
+}
+
+const Def* PartialEvaluator::residualize(Env* env, const Def* tmp_def) {
+    assert(!tmp_def->isa<Continuation>());
+
+    if (auto new_def = env->find_tmp2new(tmp_def))
+        return new_def;
+
+    if (auto tmp_primop = tmp_def->isa<PrimOp>()) {
+        Array<const Def*> new_ops(tmp_primop->num_ops());
+        for (size_t i = 0; i != tmp_primop->num_ops(); ++i)
+            new_ops[i] = residualize(env, tmp_def->op(i));
+
+        auto new_primop = tmp_primop->rebuild(new_world(), new_ops, import(tmp_primop->type()));
+        return env->insert_tmp2new(tmp_primop, new_primop);
+    }
+
+    if (auto tmp_closure = tmp_def->isa<Closure>()) {
+        auto context = tmp_closure->args2context();
+        auto& new_continuation = context->new_continuation_;
+
+        if (new_continuation == nullptr) {
+            auto fn_type = import(tmp_closure->continuation()->type())->as<FnType>();
+            new_continuation = new_world().continuation(fn_type, tmp_closure->continuation()->debug_history());
+        }
+
+
+    }
+
+    return tmp_def;
 }
 
 #if 0
