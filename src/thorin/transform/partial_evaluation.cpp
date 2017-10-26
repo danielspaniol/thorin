@@ -225,7 +225,7 @@ public:
     void run();
 
 private:
-    void eval(const Closure* closure) { eval(closure, Array<const Def*>(closure->continuation()->num_args())); }
+    void eval(const Closure* closure) { eval(closure, Array<const Def*>(closure->continuation()->num_params())); }
     void eval(const Closure* closure, Defs args);
     const Def* materialize(Def2Def& old2new, const Def* odef);
     const Def* specialize(Env* env, const Def* odef);
@@ -329,10 +329,10 @@ void PartialEvaluator::residualize(Continuation* new_parent_continuation, const 
     auto callee = closure->continuation();
     auto context = closure->args2context(args);
 
-    auto new_continuation = context->new_continuation_;
+    auto& new_continuation = context->new_continuation_;
     if (new_continuation == nullptr) {
         if (callee->empty()) {
-            new_continuation = importer_.import(callee)->as<Continuation>();
+            new_continuation = importer_.import(callee)->as_continuation();
         } else {
             std::vector<const Type*> new_param_types;
             for (size_t i = 0, e = args.size(); i != e; ++i) {
@@ -387,9 +387,9 @@ const Def* PartialEvaluator::residualize(Env* env, const Def* tmp_def) {
         if (new_continuation == nullptr) {
             auto fn_type = import(tmp_closure->continuation()->type())->as<FnType>();
             new_continuation = new_world().continuation(fn_type, tmp_closure->continuation()->debug_history());
-            eval(tmp_closure, Array<const Def*>(new_continuation->num_params()));
+            eval(tmp_closure);
         }
-        return env->insert_tmp2new(tmp_closure, new_continuation);
+        return new_continuation;
     }
     THORIN_UNREACHABLE;
 }

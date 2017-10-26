@@ -156,4 +156,7 @@ Continuation* Def::as_continuation() const { return const_cast<Continuation*>(sc
 Continuation* Def::isa_continuation() const { return const_cast<Continuation*>(dcast<Continuation>(this)); }
 std::ostream& Def::stream(std::ostream& out) const { return out << unique_name(); }
 
+template void Array<const Def*>::dump() const;
+template void ArrayRef<const Def*>::dump() const;
+
 }
