@@ -7,8 +7,6 @@
 #include "thorin/util/hash.h"
 #include "thorin/util/log.h"
 
-// TODO copy over param's debug stuff
-// TODO fold branch + match
 // TODO pe_info
 
 namespace thorin {
@@ -418,8 +416,13 @@ Continuation* PartialEvaluator::residualize(Continuation* old_calling_continuati
     if (new_calling_continuation != nullptr) {
         Array<const Def*> new_args(new_continuation->num_params());
         for (size_t i = 0, j = 0, e = new_args.size(); i != e; ++i) {
-            if (args[i] == nullptr)
-                new_args[j++] = residualize(calling_env, calling_env->find_old2tmp(old_calling_continuation->arg(i)));
+            if (args[i] == nullptr) {
+                auto old_arg = old_calling_continuation->arg(i);
+                auto tmp_arg = calling_env->find_old2tmp(old_arg);
+                if (tmp_arg == nullptr)
+                    tmp_arg = old_arg;
+                new_args[j++] = residualize(calling_env, tmp_arg);
+            }
         }
 
         new_calling_continuation->jump(new_continuation, new_args, old_calling_continuation->jump_debug());
