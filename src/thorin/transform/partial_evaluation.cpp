@@ -311,6 +311,36 @@ void PartialEvaluator::eval(const Closure* closure, Defs args) {
 
     if (auto callee_closure = tmp_ops.front()->isa<Closure>()) {
         auto callee_continuation = callee_closure->continuation();
+        switch (callee_continuation->intrinsic()) {
+            case Intrinsic::Branch: {
+                if (auto lit = tmp_ops[0]->isa<PrimLit>()) {
+                    tmp_ops[0] = lit->value().get_bool() ? tmp_ops[1] : tmp_ops[2];
+                    tmp_ops.shrink(1);
+                }
+                break;
+            }
+            case Intrinsic::Match:
+                if (old_continuation->num_args() == 2) {
+                    tmp_ops.shrink(1);
+                    break;
+                }
+
+                if (auto lit = tmp_ops[0]->isa<PrimLit>()) {
+                    for (size_t i = 2; i < old_continuation->num_args(); i++) {
+                        if (old_world().extract(tmp_ops[i+1], 0_s)->as<PrimLit>() == lit) {
+                            tmp_ops[0] = old_world().extract(tmp_ops[i+1], 1);
+                            tmp_ops.shrink(1);
+                        }
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (auto callee_closure = tmp_ops.front()->isa<Closure>()) {
+        auto callee_continuation = callee_closure->continuation();
         if (callee_continuation->empty()) { // TODO || !specialization_oracle(tmp_ops) || other must-residualize cases
             residualize(old_continuation, new_continuation, callee_closure, calling_env,
                         Array<const Def*>(old_continuation->num_args()empty));
