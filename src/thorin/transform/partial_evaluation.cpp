@@ -339,13 +339,29 @@ void PartialEvaluator::eval(const Closure* closure, Defs args) {
 
     if (auto callee_closure = tmp_ops.front()->isa<Closure>()) {
         auto callee_continuation = callee_closure->continuation();
-        if (callee_continuation->empty()) { // TODO || !specialization_oracle(tmp_ops) || other must-residualize cases
-            residualize(old_continuation, new_continuation, callee_closure, calling_env,
-                        Array<const Def*>(old_continuation->num_args()));
-        } else {
-            callee_closure->add_context(tmp_ops.skip_front());
-            enqueue(old_continuation, context, std::move(tmp_ops));
+        auto args = tmp_ops.skip_front();
+        if (!callee_continuation->empty()) {
+            CondEval cond_eval(callee_continuation, args, top_level_);
+            std::vector<const Type*> param_types;
+            bool fold = false;
+            for (size_t i = 0, e = args.size(); i != e; ++i) {
+                if (cond_eval.eval(i)) {
+                    fold = true;
+                } else
+                    param_types.emplace_back(callee_continuation->param(i)->type());
+            }
+
+            if (fold) {
+                outf("    queueing {} with args: ", callee_continuation);
+                stream_list(std::cout, args, [](auto e) { std::cout << e; }, "[", "]\n");
+
+                callee_closure->add_context(args);
+                enqueue(old_continuation, context, std::move(tmp_ops));
+                return;
+            }
         }
+        residualize(old_continuation, new_continuation, callee_closure, calling_env,
+                    Array<const Def*>(old_continuation->num_args()));
     } else {
         assert(new_continuation->ops().empty());
         Array<const Def*> new_ops(old_continuation->num_ops());
