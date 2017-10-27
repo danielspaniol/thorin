@@ -203,14 +203,20 @@ private:
         Todo(const Todo&) = delete;
         Todo(Todo&&) = delete;
 
-        Todo(Continuation* old_parent_continuation, Context* calling_context, Array<const Def*>&& tmp_ops)
-            : old_parent_continuation_(old_parent_continuation)
+        Todo(Continuation* old_calling_continuation, Context* calling_context, Array<const Def*>&& tmp_ops)
+            : old_calling_continuation_(old_calling_continuation)
             , calling_context_(calling_context)
             , tmp_ops_(std::move(tmp_ops))
         {}
 
+        const Closure* closure() const { return tmp_ops_.front()->as<Closure>(); }
+        Defs args() const { return tmp_ops_.skip_front(); }
+        Continuation* old_calling_continuation() const { return old_calling_continuation_; }
+        Continuation* new_calling_continuation() const { return calling_context_->new_continuation(); }
+        Env* calling_env() const { return calling_context_->env(); }
+
     private:
-        Continuation* old_parent_continuation_;
+        Continuation* old_calling_continuation_;
         Context* calling_context_;
         Array<const Def*> tmp_ops_;
 
@@ -232,7 +238,7 @@ private:
     void eval(const Closure* closure, Defs args);
     const Def* materialize(Def2Def& old2new, const Def* odef);
     const Def* specialize(Env* env, const Def* odef);
-    void residualize(Continuation* old_parent_continuation, Continuation* new_parent_continuation, const Closure* closure, Env* calling_env, Defs args);
+    void residualize(Continuation* old_calling_continuation, Continuation* new_calling_continuation, const Closure* closure, Env* calling_env, Defs args);
     const Def* residualize(Env* env, const Def* tmp_def);
 
     void eat_pe_info(Continuation*);
@@ -241,8 +247,8 @@ private:
         return &closures_.back();
     }
 
-    void enqueue(Continuation* old_parent_continuation, Context* calling_context, Array<const Def*>&& tmp_ops) {
-        queue_.emplace(old_parent_continuation, calling_context, std::move(tmp_ops));
+    void enqueue(Continuation* old_calling_continuation, Context* calling_context, Array<const Def*>&& tmp_ops) {
+        queue_.emplace(old_calling_continuation, calling_context, std::move(tmp_ops));
     }
 
     const Type* import(const Type* old_type) { return importer_.import(old_type); }
@@ -262,16 +268,16 @@ void PartialEvaluator::run() {
 
         while (!queue_.empty()) {
             auto& todo = queue_.back();
-            auto closure = todo.tmp_ops_.front()->as<Closure>();
-            auto args = todo.tmp_ops_.skip_front();
+            auto closure = todo.closure();
+            auto args = todo.args();
             assert(closure->args2context_.contains(args));
             auto context = closure->args2context(args);
             if (context->num_uses() == 1) {
-                context->new_continuation_ = todo.calling_context_->new_continuation_;
+                context->new_continuation_ = todo.new_calling_continuation();
                 eval(closure, args);
             } else
-                residualize(todo.old_parent_continuation_, todo.calling_context_->new_continuation_, closure,
-                            todo.calling_context_->env(), args);
+                residualize(todo.old_calling_continuation(), todo.new_calling_continuation(), closure,
+                            todo.calling_env(), args);
             queue_.pop();
         }
     }
@@ -330,10 +336,10 @@ const Def* PartialEvaluator::specialize(Env* env, const Def* old_def) {
     return old_def;
 }
 
-// builds a call within new_parent_continuation (former old_parent_continuation) calling closure with args
+// builds a call within new_calling_continuation (former old_calling_continuation) calling closure with args
 // args[i] == x:       this must be baked into the closure's corresponding context->env
-// args[i] == nullptr: this is a residual old_parent_continuation->arg(i)
-void PartialEvaluator::residualize(Continuation* old_parent_continuation, Continuation* new_parent_continuation, const Closure* closure, Env* calling_env, Defs args) {
+// args[i] == nullptr: this is a residual old_calling_continuation->arg(i)
+void PartialEvaluator::residualize(Continuation* old_calling_continuation, Continuation* new_calling_continuation, const Closure* closure, Env* calling_env, Defs args) {
     auto callee = closure->continuation();
     auto context = closure->args2context(args);
 
@@ -362,14 +368,14 @@ void PartialEvaluator::residualize(Continuation* old_parent_continuation, Contin
         }
     }
 
-    if (new_parent_continuation != nullptr) {
+    if (new_calling_continuation != nullptr) {
         Array<const Def*> new_args(new_continuation->num_params());
         for (size_t i = 0, j = 0, e = new_args.size(); i != e; ++i) {
             if (args[i] == nullptr)
-                new_args[j++] = residualize(calling_env, calling_env->find_old2tmp(old_parent_continuation->arg(i)));
+                new_args[j++] = residualize(calling_env, calling_env->find_old2tmp(old_calling_continuation->arg(i)));
         }
 
-        new_parent_continuation->jump(new_continuation, new_args, old_parent_continuation->jump_debug());
+        new_calling_continuation->jump(new_continuation, new_args, old_calling_continuation->jump_debug());
     }
 }
 
