@@ -203,17 +203,15 @@ private:
         Todo(const Todo&) = delete;
         Todo(Todo&&) = delete;
 
-        Todo(Continuation* old_parent_continuation, Continuation* new_parent_continuation, Env* calling_env, Array<const Def*>&& tmp_ops)
+        Todo(Continuation* old_parent_continuation, Context* calling_context, Array<const Def*>&& tmp_ops)
             : old_parent_continuation_(old_parent_continuation)
-            , new_parent_continuation_(new_parent_continuation)
-            , calling_env_(calling_env)
+            , calling_context_(calling_context)
             , tmp_ops_(std::move(tmp_ops))
         {}
 
     private:
         Continuation* old_parent_continuation_;
-        Continuation* new_parent_continuation_;
-        Env* calling_env_;
+        Context* calling_context_;
         Array<const Def*> tmp_ops_;
 
         friend class PartialEvaluator;
@@ -243,8 +241,8 @@ private:
         return &closures_.back();
     }
 
-    void enqueue(Continuation* old_parent_continuation, Continuation* new_parent_continuation, Env* calling_env, Array<const Def*>&& tmp_ops) {
-        queue_.emplace(old_parent_continuation, new_parent_continuation, calling_env, std::move(tmp_ops));
+    void enqueue(Continuation* old_parent_continuation, Context* calling_context, Array<const Def*>&& tmp_ops) {
+        queue_.emplace(old_parent_continuation, calling_context, std::move(tmp_ops));
     }
 
     const Type* import(const Type* old_type) { return importer_.import(old_type); }
@@ -269,10 +267,11 @@ void PartialEvaluator::run() {
             assert(closure->args2context_.contains(args));
             auto context = closure->args2context(args);
             if (context->num_uses() == 1) {
-                context->new_continuation_ = todo.new_parent_continuation_;
+                context->new_continuation_ = todo.calling_context_->new_continuation_;
                 eval(closure, args);
             } else
-                residualize(todo.old_parent_continuation_, todo.new_parent_continuation_, closure, todo.calling_env_, args);
+                residualize(todo.old_parent_continuation_, todo.calling_context_->new_continuation_, closure,
+                            todo.calling_context_->env(), args);
             queue_.pop();
         }
     }
@@ -305,7 +304,7 @@ void PartialEvaluator::eval(const Closure* closure, Defs args) {
             residualize(old_continuation, new_continuation, callee_closure, context->env(), Array<const Def*>(old_continuation->num_args()));
         } else {
             callee_closure->args2context(tmp_ops.skip_front());
-            enqueue(old_continuation, new_continuation, context->env(), std::move(tmp_ops));
+            enqueue(old_continuation, context, std::move(tmp_ops));
         }
     }
 }
