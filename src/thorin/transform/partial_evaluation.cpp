@@ -171,8 +171,7 @@ public:
 
     Continuation* continuation() const { return continuation_; }
 
-    Context* args2context() const { return args2context(Array<const Def*>(continuation()->num_params())); }
-    Context* args2context(Defs args) const {
+    Context* add_context(Defs args) const {
         auto p = args2context_.emplace(Array<const Def*>(args), std::make_unique<Context>(parent_env_));
         auto context = p.first->second.get();
         if (!p.second)
@@ -185,6 +184,12 @@ public:
             }
         }
         return context;
+    }
+
+    Context* get_context(Defs args) const {
+        auto i = args2context_.find(args);
+        assert(i != args2context_.end());
+        return i->second.get();
     }
 
 private:
@@ -255,7 +260,6 @@ private:
 
     World& old_world_;
     Importer importer_;
-    //ContinuationSet done_;
     std::queue<Todo> queue_;
     ContinuationMap<bool> top_level_;
     std::deque<Closure> closures_;
@@ -272,8 +276,7 @@ void PartialEvaluator::run() {
             auto& todo = queue_.front();
             auto closure = todo.closure();
             auto args = todo.args();
-            assert(closure->args2context_.contains(args));
-            auto context = closure->args2context(args);
+            auto context = closure->get_context(args);
             if (context->num_uses() == 1) {
                 context->new_continuation_ = todo.new_calling_continuation();
                 eval(closure, args);
@@ -296,27 +299,27 @@ void PartialEvaluator::run() {
 }
 
 void PartialEvaluator::eval(const Closure* closure, Defs args) {
-    auto context = closure->args2context(args);
-    assert(context->num_uses() > 1 && "context must have existed beforehand");
+    auto context = closure->get_context(args);
     auto new_continuation = context->new_continuation();
     assert(new_continuation != nullptr);
 
+    auto calling_env = context->env();
     auto old_continuation = closure->continuation();
     Array<const Def*> tmp_ops(old_continuation->num_ops(), [&] (auto i) {
-        return specialize(context->env(), old_continuation->op(i));
+        return specialize(calling_env, old_continuation->op(i));
     });
 
     if (auto callee_closure = tmp_ops.front()->isa<Closure>()) {
         auto callee_continuation = callee_closure->continuation();
         if (callee_continuation->empty()) { // TODO || !specialization_oracle(tmp_ops) || other must-residualize cases
-            residualize(old_continuation, new_continuation, callee_closure, context->env(), Array<const Def*>(old_continuation->num_args()));
+            residualize(old_continuation, new_continuation, callee_closure, calling_env,
+                        Array<const Def*>(old_continuation->num_args()empty));
         } else {
-            callee_closure->args2context(tmp_ops.skip_front());
+            callee_closure->add_context(tmp_ops.skip_front());
             enqueue(old_continuation, context, std::move(tmp_ops));
         }
     } else {
         assert(new_continuation->ops().empty());
-        auto calling_env = context->env();
         Array<const Def*> new_ops(old_continuation->num_ops());
         for (size_t i = 0, e = new_ops.size(); i != e; ++i) {
             new_ops[i] = residualize(calling_env, tmp_ops[i]);
@@ -348,11 +351,12 @@ const Def* PartialEvaluator::specialize(Env* env, const Def* old_def) {
 }
 
 // builds a call within new_calling_continuation (former old_calling_continuation) calling closure with args
+// we need to be absolutely sure that we want to build this call before invoking this
 // args[i] == x:       this must be baked into the closure's corresponding context->env
 // args[i] == nullptr: this is a residual old_calling_continuation->arg(i)
 Continuation* PartialEvaluator::residualize(Continuation* old_calling_continuation, Continuation* new_calling_continuation, const Closure* closure, Env* calling_env, Defs args) {
     auto callee = closure->continuation();
-    auto context = closure->args2context(args);
+    auto context = closure->add_context(args);
 
     auto& new_continuation = context->new_continuation_;
     if (new_continuation == nullptr) {
@@ -412,13 +416,7 @@ const Def* PartialEvaluator::residualize(Env* env, const Def* tmp_def) {
     }
 
     if (auto tmp_closure = tmp_def->isa<Closure>()) {
-        auto context = tmp_closure->args2context();
-        auto& new_continuation = context->new_continuation_;
-
-        if (new_continuation == nullptr) {
-            residualize(nullptr, nullptr, tmp_closure, nullptr, Array<const Def*>(tmp_closure->continuation()->num_params()));
-        }
-        return new_continuation;
+        return residualize(nullptr, nullptr, tmp_closure, nullptr, Array<const Def*>(tmp_closure->continuation()->num_params()));
     }
     THORIN_UNREACHABLE;
 }
