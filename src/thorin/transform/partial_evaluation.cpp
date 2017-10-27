@@ -238,7 +238,7 @@ private:
     void eval(const Closure* closure, Defs args);
     const Def* materialize(Def2Def& old2new, const Def* odef);
     const Def* specialize(Env* env, const Def* odef);
-    void residualize(Continuation* old_calling_continuation, Continuation* new_calling_continuation, const Closure* closure, Env* calling_env, Defs args);
+    Continuation* residualize(Continuation* old_calling_continuation, Continuation* new_calling_continuation, const Closure* closure, Env* calling_env, Defs args);
     const Def* residualize(Env* env, const Def* tmp_def);
 
     void eat_pe_info(Continuation*);
@@ -264,10 +264,12 @@ private:
 void PartialEvaluator::run() {
     Env root_env(nullptr);
     for (auto external : old_world().externals()) {
-        residualize(nullptr, nullptr, create_closure(&root_env, external), &root_env, Array<const Def*>(external->num_params()));
+        auto new_continuation = residualize(nullptr, nullptr, create_closure(&root_env, external), nullptr,
+                                            Array<const Def*>(external->num_params()));
+        new_continuation->make_external();
 
         while (!queue_.empty()) {
-            auto& todo = queue_.back();
+            auto& todo = queue_.front();
             auto closure = todo.closure();
             auto args = todo.args();
             assert(closure->args2context_.contains(args));
@@ -282,7 +284,6 @@ void PartialEvaluator::run() {
         }
     }
 
-    swap(new_world(), old_world());
     new_world().dump();
 
     new_world().mark_pe_done();
@@ -291,6 +292,7 @@ void PartialEvaluator::run() {
         continuation->destroy_pe_profile();
 
     new_world().cleanup();
+    swap(new_world(), old_world());
 }
 
 void PartialEvaluator::eval(const Closure* closure, Defs args) {
@@ -312,6 +314,15 @@ void PartialEvaluator::eval(const Closure* closure, Defs args) {
             callee_closure->args2context(tmp_ops.skip_front());
             enqueue(old_continuation, context, std::move(tmp_ops));
         }
+    } else {
+        assert(new_continuation->ops().empty());
+        auto calling_env = context->env();
+        Array<const Def*> new_ops(old_continuation->num_ops());
+        for (size_t i = 0, e = new_ops.size(); i != e; ++i) {
+            new_ops[i] = residualize(calling_env, tmp_ops[i]);
+        }
+
+        new_continuation->jump(new_ops.front(), new_ops.skip_front(), old_continuation->jump_debug());
     }
 }
 
@@ -339,7 +350,7 @@ const Def* PartialEvaluator::specialize(Env* env, const Def* old_def) {
 // builds a call within new_calling_continuation (former old_calling_continuation) calling closure with args
 // args[i] == x:       this must be baked into the closure's corresponding context->env
 // args[i] == nullptr: this is a residual old_calling_continuation->arg(i)
-void PartialEvaluator::residualize(Continuation* old_calling_continuation, Continuation* new_calling_continuation, const Closure* closure, Env* calling_env, Defs args) {
+Continuation* PartialEvaluator::residualize(Continuation* old_calling_continuation, Continuation* new_calling_continuation, const Closure* closure, Env* calling_env, Defs args) {
     auto callee = closure->continuation();
     auto context = closure->args2context(args);
 
@@ -359,8 +370,10 @@ void PartialEvaluator::residualize(Continuation* old_calling_continuation, Conti
 
             for (size_t i = 0, e = args.size(); i != e; ++i) {
                 if (args[i] == nullptr) {
-                    context->env()->insert_tmp2new(callee->param(i), new_continuation->param(i));
-                    new_continuation->param(i)->debug().set(callee->param(i)->name());
+                    auto old_param = callee->param(i);
+                    auto new_param = new_continuation->param(i);
+                    context->env()->insert_tmp2new(old_param, new_param);
+                    new_param->debug() = old_param->debug_history();
                 }
             }
 
@@ -377,6 +390,8 @@ void PartialEvaluator::residualize(Continuation* old_calling_continuation, Conti
 
         new_calling_continuation->jump(new_continuation, new_args, old_calling_continuation->jump_debug());
     }
+
+    return new_continuation;
 }
 
 const Def* PartialEvaluator::residualize(Env* env, const Def* tmp_def) {
@@ -401,14 +416,7 @@ const Def* PartialEvaluator::residualize(Env* env, const Def* tmp_def) {
         auto& new_continuation = context->new_continuation_;
 
         if (new_continuation == nullptr) {
-            auto fn_type = import(tmp_closure->continuation()->type())->as<FnType>();
-            new_continuation = new_world().continuation(fn_type, tmp_closure->continuation()->debug_history());
-
-            for (size_t i = 0, e = fn_type->num_ops(); i != e; ++i) {
-                context->env()->insert_tmp2new(tmp_closure->continuation()->param(i), new_continuation->param(i));
-                new_continuation->param(i)->debug().set(tmp_closure->continuation()->param(i)->name());
-            }
-            eval(tmp_closure);
+            residualize(nullptr, nullptr, tmp_closure, nullptr, Array<const Def*>(tmp_closure->continuation()->num_params()));
         }
         return new_continuation;
     }
