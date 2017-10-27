@@ -343,7 +343,7 @@ void PartialEvaluator::eval(const Closure* closure, Defs args) {
         auto callee_continuation = callee_closure->continuation();
         if (callee_continuation->empty()) { // TODO || !specialization_oracle(tmp_ops) || other must-residualize cases
             residualize(old_continuation, new_continuation, callee_closure, calling_env,
-                        Array<const Def*>(old_continuation->num_args()empty));
+                        Array<const Def*>(old_continuation->num_args()));
         } else {
             callee_closure->add_context(tmp_ops.skip_front());
             enqueue(old_continuation, context, std::move(tmp_ops));
