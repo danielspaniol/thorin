@@ -73,7 +73,7 @@ private:
     ContinuationMap<bool>& top_level_;
 };
 
-class Env {
+class Env : public Streamable {
 public:
     Env(Env* parent)
         : parent_(parent)
@@ -109,6 +109,14 @@ public:
             return parent_->find_tmp2new(tmp_def);
         else
             return nullptr;
+    }
+
+    virtual std::ostream& stream(std::ostream& o) const {
+        o << "{";
+        auto print = [&] (const auto& elem) { o << elem.first << ": " << elem.second; };
+        stream_list(o, old2tmp_, print, " o2t{", "}, ");
+        stream_list(o, tmp2new_, print, "t2n{", "}");
+        return o << "}";
     }
 
 private:
@@ -170,6 +178,8 @@ public:
     Continuation* continuation() const { return continuation_; }
 
     Context* add_context(Defs args) const {
+        outf("add context for {} with args: ", continuation_);
+        stream_list(std::cout, args, [](auto e) { std::cout << e; }, "[", "]\n");
         auto p = args2context_.emplace(Array<const Def*>(args), std::make_unique<Context>(parent_env_));
         auto context = p.first->second.get();
         if (!p.second)
@@ -189,6 +199,8 @@ public:
         assert(i != args2context_.end());
         return i->second.get();
     }
+
+    virtual std::ostream& stream(std::ostream& o) const { return o << unique_name() << "(" << continuation() << ")"; }
 
 private:
     Env* parent_env_;
@@ -229,6 +241,7 @@ public:
     PartialEvaluator(World& old_world)
         : old_world_(old_world)
         , importer_(old_world)
+        , indent(0)
     {}
 
     World& old_world() { return old_world_; }
@@ -245,6 +258,7 @@ private:
     void eat_pe_info(Continuation*);
     const Closure* create_closure(Env* env, Continuation* continuation) {
         closures_.emplace_back(env, continuation);
+        outf("creating closure {} for continuation {} in env {}\n", closures_.back().gid(), continuation, env);
         return &closures_.back();
     }
 
@@ -254,16 +268,26 @@ private:
 
     const Type* import(const Type* old_type) { return importer_.import(old_type); }
 
+    template<typename... Args>
+    std::ostream& outf(const char* fmt, Args... args) {
+        for (size_t i = 0; i < indent; i++)
+            std::cout << "  ";
+        return streamf(std::cout, fmt, std::forward<Args>(args)...);
+    }
+
     World& old_world_;
     Importer importer_;
     std::queue<Todo> queue_;
     ContinuationMap<bool> top_level_;
     std::deque<Closure> closures_;
+    size_t indent;
 };
 
 void PartialEvaluator::run() {
+    old_world().dump();
     Env root_env(nullptr);
     for (auto external : old_world().externals()) {
+        outf("--PE: {}\n", external);
         auto new_continuation = residualize(nullptr, nullptr, create_closure(&root_env, external), nullptr,
                                             Array<const Def*>(external->num_params()));
         new_continuation->make_external();
@@ -273,10 +297,13 @@ void PartialEvaluator::run() {
             auto closure = todo.closure();
             auto args = todo.args();
             auto context = closure->get_context(args);
+            outf("-TODO: {} #uses {} for args: ", closure->continuation(), context->num_uses());
+            stream_list(std::cout, args, [](auto e) { std::cout << e; }, "[", "]\n");
             if (context->num_uses() == 1) {
                 context->new_continuation_ = todo.new_calling_continuation();
                 eval(closure, context->env(), args);
             } else
+                // TODO check whether we used num_uses==1 branch for this context already
                 residualize(todo.old_calling_continuation(), todo.new_calling_continuation(), closure,
                             context->env(), args);
             queue_.pop();
@@ -299,6 +326,9 @@ void PartialEvaluator::eval(const Closure* closure, Env* env, Defs args) {
     auto new_continuation = closure_context->new_continuation();
     auto old_continuation = closure->continuation();
     assert(new_continuation != nullptr);
+    indent++;
+    outf("eval {} with args: ", old_continuation);
+    stream_list(std::cout, args, [](auto e) { std::cout << e; }, "[", "]\n");
 
     Array<const Def*> tmp_ops(old_continuation->num_ops(), [&] (auto i) {
         return specialize(env, old_continuation->op(i));
@@ -311,6 +341,7 @@ void PartialEvaluator::eval(const Closure* closure, Env* env, Defs args) {
                 if (auto lit = tmp_ops[1]->isa<PrimLit>()) {
                     tmp_ops[0] = lit->value().get_bool() ? tmp_ops[2] : tmp_ops[3];
                     tmp_ops.shrink(1);
+                    outf("folding branch with {} to {}\n", lit, tmp_ops[0]);
                 }
                 break;
             }
@@ -350,11 +381,12 @@ void PartialEvaluator::eval(const Closure* closure, Env* env, Defs args) {
             }
 
             if (fold) {
-                outf("    queueing {} with args: ", callee_continuation);
+                outf("queueing {} with args: ", callee_continuation);
                 stream_list(std::cout, args, [](auto e) { std::cout << e; }, "[", "]\n");
 
                 callee_closure->add_context(args);
                 enqueue(old_continuation, new_continuation, std::move(tmp_ops));
+                indent--;
                 return;
             }
         }
@@ -369,6 +401,7 @@ void PartialEvaluator::eval(const Closure* closure, Env* env, Defs args) {
 
         new_continuation->jump(new_ops.front(), new_ops.skip_front(), old_continuation->jump_debug());
     }
+    indent--;
 }
 
 const Def* PartialEvaluator::specialize(Env* env, const Def* old_def) {
@@ -398,6 +431,9 @@ const Def* PartialEvaluator::specialize(Env* env, const Def* old_def) {
 // args[i] == nullptr: this is a residual old_calling_continuation->arg(i)
 Continuation* PartialEvaluator::residualize(Continuation* old_calling_continuation, Continuation* new_calling_continuation, const Closure* closure, Env* calling_env, Defs args) {
     auto callee = closure->continuation();
+    indent++;
+    outf("residualize {} in {} for args: ", callee, old_calling_continuation);
+    stream_list(std::cout, args, [](auto e) { std::cout << e; }, "[", "]\n");
     auto context = closure->add_context(args);
 
     auto& new_continuation = context->new_continuation_;
@@ -422,10 +458,13 @@ Continuation* PartialEvaluator::residualize(Continuation* old_calling_continuati
                     new_param->debug() = old_param->debug_history();
                 }
             }
+            outf("-> built new continuation head ");
+            new_continuation->dump_head();
 
             eval(closure, context->env(), args);
         }
-    }
+    } else
+        outf("-> nothing to do, already residualized\n");
 
     if (new_calling_continuation != nullptr) {
         Array<const Def*> new_args(new_continuation->num_params());
@@ -440,8 +479,12 @@ Continuation* PartialEvaluator::residualize(Continuation* old_calling_continuati
         }
 
         new_calling_continuation->jump(new_continuation, new_args, old_calling_continuation->jump_debug());
+
+        outf("built jump to {} in {} with new args: ", new_continuation, new_calling_continuation);
+        stream_list(std::cout, new_args, [](auto e) { std::cout << e; }, "[", "]\n");
     }
 
+    indent--;
     return new_continuation;
 }
 
