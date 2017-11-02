@@ -123,6 +123,8 @@ private:
     Env* parent_;
     Def2Def old2tmp_;
     Def2Def tmp2new_;
+
+    friend class PartialEvaluator;
 };
 
 class Context {
@@ -384,14 +386,17 @@ void PartialEvaluator::eval(const Closure* closure, Env* env, Defs args) {
                 outf("queueing {} with args: ", callee_continuation);
                 stream_list(std::cout, args, [](auto e) { std::cout << e; }, "[", "]\n");
 
-                callee_closure->add_context(args);
+                auto c = callee_closure->add_context(args);
+
+                for (auto p : env->tmp2new_) {
+                    c->env()->insert_tmp2new(p.first, p.second);
+                }
                 enqueue(old_continuation, new_continuation, std::move(tmp_ops));
                 indent--;
                 return;
             }
         }
-        residualize(old_continuation, new_continuation, callee_closure, env,
-                    Array<const Def*>(args.size()));
+        residualize(old_continuation, new_continuation, callee_closure, env, Array<const Def*>(args.size()));
     } else {
         assert(new_continuation->ops().empty());
         Array<const Def*> new_ops(old_continuation->num_ops());
