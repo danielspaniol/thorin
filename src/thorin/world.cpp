@@ -1010,7 +1010,7 @@ void World::cleanup() { cleanup_world(*this); }
 
 void World::opt() {
     cleanup();
-    while (partial_evaluation(*this, true)); // lower2cff
+    //while (partial_evaluation(*this, true)); // lower2cff
     flatten_tuples(*this);
     clone_bodies(*this);
     split_slots(*this);

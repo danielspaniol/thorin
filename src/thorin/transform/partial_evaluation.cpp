@@ -10,7 +10,7 @@ class PartialEvaluator {
 public:
     PartialEvaluator(World& world, bool lower2cff)
         : world_(world)
-        , lower2cff_(lower2cff)
+        , lower2cff_(true) // HACK
         , boundary_(Def::gid_counter())
     {}
 
