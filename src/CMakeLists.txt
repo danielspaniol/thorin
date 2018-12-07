@@ -7,10 +7,7 @@ else()
     add_definitions("-Wall -Wextra")
 endif()
 
-# check for Half library
-find_package(Half REQUIRED)
-message(STATUS "Building with Half library from ${Half_INCLUDE_DIRS}.")
-include_directories(${Half_INCLUDE_DIRS})
+include_directories(${PROJECT_SOURCE_DIR}/half/include)
 
 if(LLVM_FOUND)
     add_definitions(${LLVM_DEFINITIONS})
