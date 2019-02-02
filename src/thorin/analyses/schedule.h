@@ -78,7 +78,7 @@ private:
 
     const Scope& scope_;
     F_CFG::Map<size_t> indices_;
-    Array<Block> blocks_;
+    std::vector<Block> blocks_;
     Tag tag_;
 
     friend class Scheduler;

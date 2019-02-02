@@ -15,7 +15,7 @@
 
 namespace thorin {
 
-template<class T>
+template<class T, size_t>
 class Array;
 
 //------------------------------------------------------------------------------
@@ -53,7 +53,8 @@ public:
         : size_(ref.size_)
         , ptr_(ref.ptr_)
     {}
-    ArrayRef(const Array<T>& array)
+    template<size_t StackCapacity>
+    ArrayRef(const Array<T, StackCapacity>& array)
         : size_(array.size())
         , ptr_(array.begin())
     {}
@@ -84,7 +85,8 @@ public:
     ArrayRef<T> skip_back (size_t num = 1) const { return ArrayRef<T>(ptr_, size() - num); }
     ArrayRef<T> get_front (size_t num = 1) const { assert(num <= size()); return ArrayRef<T>(ptr_, num); }
     ArrayRef<T> get_back  (size_t num = 1) const { assert(num <= size()); return ArrayRef<T>(ptr_ + size() - num, num); }
-    Array<T> cut(ArrayRef<size_t> indices, size_t reserve = 0) const;
+    // TODO make 8 a template parameter
+    Array<T, 8> cut(ArrayRef<size_t> indices, size_t reserve = 0) const;
     template<class Other>
     bool operator==(const Other& other) const { return this->size() == other.size() && std::equal(begin(), end(), other.begin()); }
     void dump() const { stream(std::cout) << "\n"; }
@@ -114,7 +116,7 @@ std::ostream& operator<<(std::ostream& os, const ArrayRef<T> a) {
  *  - Because of this @p Array is slightly more lightweight and usually consumes slightly less memory than <tt>std::vector</tt>.
  *  - @p Array integrates nicely with the usefull @p ArrayRef container.
  */
-template<class T>
+template<class T, size_t StackCapacity = 8>
 class Array {
 public:
     typedef T value_type;
@@ -124,54 +126,59 @@ public:
     typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
     Array()
-        : size_(0)
-        , ptr_(nullptr)
+        : Array(0)
     {}
     explicit Array(size_t size)
         : size_(size)
-        , ptr_(new T[size]())
+        , ptr_(alloc())
     {}
     Array(size_t size, const T& val)
         : size_(size)
-        , ptr_(new T[size])
+        , ptr_(alloc())
     {
         std::fill(begin(), end(), val);
     }
     Array(ArrayRef<T> ref)
         : size_(ref.size())
-        , ptr_(new T[ref.size()])
+        , ptr_(alloc())
     {
         std::copy(ref.begin(), ref.end(), this->begin());
     }
     Array(Array&& other)
         : size_(std::move(other.size_))
-        , ptr_(std::move(other.ptr_))
     {
-        other.ptr_ = nullptr;
+        if (size_ <= StackCapacity) {
+            std::move(other.data_.begin(), other.data_.end(), this->data_.begin());
+            ptr_ = data_.data();
+        } else {
+            ptr_ = std::move(other.ptr_);
+        }
+
+        other.ptr_ = other.data_.data();
         other.size_ = 0;
     }
     Array(const Array& other)
         : size_(other.size())
-        , ptr_(new T[other.size()])
+        , ptr_(alloc())
     {
         std::copy(other.begin(), other.end(), this->begin());
     }
     Array(const std::vector<T>& other)
         : size_(other.size())
-        , ptr_(new T[other.size()])
+        , ptr_(alloc())
     {
         std::copy(other.begin(), other.end(), this->begin());
     }
     template<class I>
     Array(const I begin, const I end)
         : size_(std::distance(begin, end))
-        , ptr_(new T[size_])
+        , ptr_(alloc())
     {
         std::copy(begin, end, ptr_);
     }
     Array(std::initializer_list<T> list)
         : size_(std::distance(list.begin(), list.end()))
-        , ptr_(new T[size_])
+        , ptr_(alloc())
     {
         std::copy(list.begin(), list.end(), ptr_);
     }
@@ -182,7 +189,7 @@ public:
             (*this)[i] = f(i);
     }
 
-    ~Array() { delete[] ptr_; }
+    ~Array() { if (size_ > StackCapacity) delete[] ptr_; }
 
     iterator begin() { return ptr_; }
     iterator end() { return ptr_ + size_; }
@@ -202,25 +209,57 @@ public:
     ArrayRef<T> get_front (size_t num = 1) const { assert(num <= size()); return ArrayRef<T>(ptr_, num); }
     ArrayRef<T> get_back  (size_t num = 1) const { assert(num <= size()); return ArrayRef<T>(ptr_ + size() - num, num); }
     Array<T> cut(ArrayRef<size_t> indices, size_t reserve = 0) const { return ArrayRef<T>(*this).cut(indices, reserve); }
-    void shrink(size_t newsize) { assert(newsize <= size_); size_ = newsize; }
+    void shrink(size_t newsize) {
+        assert(newsize <= size_);
+        if (newsize <= StackCapacity && size_ > StackCapacity) {
+            std::move(ptr_, ptr_ + newsize, data_.begin());
+            delete[] ptr_;
+            ptr_ = data_.data();
+        }
+        size_ = newsize;
+    }
     ArrayRef<T> ref() const { return ArrayRef<T>(ptr_, size_); }
     T* data() { return ptr_; }
     const T* data() const { return ptr_; }
-    T& operator[](size_t i) { assert(i < size() && "index out of bounds"); return ptr_[i]; }
-    T const& operator[](size_t i) const { assert(i < size() && "index out of bounds"); return ptr_[i]; }
+    T& operator[](size_t i) { assert(size_ > StackCapacity || ptr_ == data_.data()); assert(i < size() && "index out of bounds"); return ptr_[i]; }
+    T const& operator[](size_t i) const { assert(size_ > StackCapacity || ptr_ == data_.data()); assert(i < size() && "index out of bounds"); return ptr_[i]; }
     bool operator==(const Array<T>& other) const { return ArrayRef<T>(*this) == ArrayRef<T>(other); }
     Array<T>& operator=(Array<T> other) { swap(*this, other); return *this; }
     void dump() const { ref().dump(); }
 
     friend void swap(Array& a, Array& b) {
         using std::swap;
+        assert(a.size_ > StackCapacity || a.ptr_ == a.data_.data());
+        assert(b.size_ > StackCapacity || b.ptr_ == b.data_.data());
+        if (a.size_ <= StackCapacity) {
+            if (b.size_ <= StackCapacity) {
+                // TODO maybe use std::swap_ranges - but maybe it's not worth the effort
+                swap(a.data_, b.data_);
+            } else {
+                std::move(a.data_.begin(), a.data_.end(), b.data_.begin());
+                a.ptr_ = b.ptr_;
+                b.ptr_ = b.data_.data();
+            }
+        } else {
+            if (b.size_ <= StackCapacity) {
+                std::move(b.data_.begin(), b.data_.end(), a.data_.begin());
+                b.ptr_ = a.ptr_;
+                a.ptr_ = a.data_.data();
+            } else {
+                swap(a.ptr_,  b.ptr_);
+            }
+        }
         swap(a.size_, b.size_);
-        swap(a.ptr_,  b.ptr_);
+        assert(a.size_ > StackCapacity || a.ptr_ == a.data_.data());
+        assert(b.size_ > StackCapacity || b.ptr_ == b.data_.data());
     }
 
 private:
+    T* alloc() { return size_ <= StackCapacity ? data_.data() : new T[size_](); }
+
     size_t size_;
     T* ptr_;
+    std::array<T, StackCapacity> data_ = {};
 };
 
 template<class T>

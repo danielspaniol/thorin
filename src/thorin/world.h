@@ -59,7 +59,7 @@ public:
     // literals
 
 #define THORIN_ALL_TYPE(T, M) \
-    const Def* literal_##T(T val, Debug dbg, size_t length = 1) { return literal(PrimType_##T, Box(val), dbg, length); }
+    const Def* literal_##T(T val, Debug dbg = {}, size_t length = 1) { return literal(PrimType_##T, Box(val), dbg, length); }
 #include "thorin/tables/primtypetable.h"
     const Def* literal(PrimTypeTag tag, Box box, Debug dbg, size_t length = 1) { return splat(cse(new PrimLit(*this, tag, box, dbg)), length); }
     template<class T>
