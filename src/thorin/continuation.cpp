@@ -169,7 +169,7 @@ Continuations Continuation::succs() const {
 }
 
 void Continuation::set_all_true_filter() {
-    filter_ = Array<const Def*>(num_params(), [&](size_t) { return world().literal_bool(true, Debug{}); });
+    filter_ = Array<const Def*>(num_params(), world().literal_bool(true, Debug{}));
 }
 
 void Continuation::make_external() { return world().add_external(this); }

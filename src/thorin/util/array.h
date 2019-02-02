@@ -154,7 +154,6 @@ public:
             ptr_ = std::move(other.ptr_);
         }
 
-        other.ptr_ = other.data_.data();
         other.size_ = 0;
     }
     Array(const Array& other)
@@ -255,11 +254,11 @@ public:
     }
 
 private:
-    T* alloc() { return size_ <= StackCapacity ? data_.data() : new T[size_](); }
+    T* alloc() { return size_ <= StackCapacity ? data_.data() : new T[size_]; }
 
     size_t size_;
     T* ptr_;
-    std::array<T, StackCapacity> data_ = {};
+    std::array<T, StackCapacity> data_;
 };
 
 template<class T>

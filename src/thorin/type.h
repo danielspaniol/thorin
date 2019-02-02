@@ -103,11 +103,9 @@ public:
 class StructType : public Type {
 private:
     StructType(TypeTable& table, Symbol name, size_t size)
-        : Type(table, Node_StructType, thorin::Array<const Type*>(size))
+        : Type(table, Node_StructType, size)
         , name_(name)
-    {
-        nominal_ = true;
-    }
+    {}
 
 public:
     Symbol name() const { return name_; }

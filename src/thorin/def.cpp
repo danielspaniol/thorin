@@ -19,7 +19,7 @@ size_t Def::gid_counter_ = 1;
 
 Def::Def(NodeTag tag, const Type* type, size_t size, Debug dbg)
     : tag_(tag)
-    , ops_(size)
+    , ops_(size, nullptr)
     , type_(type)
     , debug_(dbg)
     , gid_(gid_counter_++)

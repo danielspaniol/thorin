@@ -40,6 +40,7 @@ protected:
     TypeBase& operator=(const TypeBase&) = delete;
 
     TypeBase(TypeTable& table, int tag, Types ops);
+    TypeBase(TypeTable& table, int tag, size_t num_ops);
 
     void set(size_t i, const TypeBase* type) {
         ops_[i] = type;
@@ -81,12 +82,12 @@ protected:
     int order_ = 0;
     mutable bool known_       = true;
     mutable bool monomorphic_ = true;
-    mutable bool nominal_     = false;
 
 private:
     virtual const TypeBase* vrebuild(TypeTable& to, Types ops) const = 0;
 
     mutable TypeTable* table_;
+    bool nominal_;
     int tag_;
     thorin::Array<const TypeBase*> ops_;
     mutable size_t gid_;
@@ -133,15 +134,23 @@ size_t TypeBase<TypeTable>::gid_counter_ = 1;
 template <class TypeTable>
 TypeBase<TypeTable>::TypeBase(TypeTable& table, int tag, Types ops)
     : table_(&table)
+    , nominal_(false)
     , tag_(tag)
     , ops_(ops.size())
     , gid_(gid_counter_++)
 {
-    for (size_t i = 0, e = num_ops(); i != e; ++i) {
-        if (auto op = ops[i])
-            set(i, op);
-    }
+    for (size_t i = 0, e = num_ops(); i != e; ++i)
+        set(i, ops[i]);
 }
+
+template <class TypeTable>
+TypeBase<TypeTable>::TypeBase(TypeTable& table, int tag, size_t num_ops)
+    : table_(&table)
+    , nominal_(true)
+    , tag_(tag)
+    , ops_(num_ops, nullptr)
+    , gid_(gid_counter_++)
+{}
 
 template <class TypeTable>
 const TypeBase<TypeTable>* TypeBase<TypeTable>::reduce(int depth, const TypeBase* type, Type2Type& map) const {
