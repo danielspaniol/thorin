@@ -524,8 +524,8 @@ private:
         return nodes;
     }
 
-    uint32_t capacity_;
-    uint32_t size_;
+    size_t capacity_;
+    size_t size_;
     std::array<value_type, StackCapacity> array_;
     value_type* nodes_;
 #if THORIN_ENABLE_CHECKS

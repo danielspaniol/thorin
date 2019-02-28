@@ -9,9 +9,9 @@
 namespace thorin {
 
 struct IndexHash {
-    static uint64_t hash(u32 u) { return u; }
-    static bool eq(u32 a, u32 b) { return a == b; }
-    static u32 sentinel() { return 0xFFFFFFFF; }
+    static uint64_t hash(size_t u) { return static_cast<uint64_t>(u); }
+    static bool eq(size_t a, size_t b) { return a == b; }
+    static size_t sentinel() { return std::numeric_limits<size_t>::max(); /* 0xFFFFFFFF; */ }
 };
 
 static void split(const Slot* slot) {
@@ -19,10 +19,10 @@ static void split(const Slot* slot) {
     auto dim = array_type->dim();
     auto elem_type = array_type->elem_type();
 
-    HashMap<u32, const Def*, IndexHash> new_slots;
+    HashMap<size_t, const Def*, IndexHash> new_slots;
     auto& world = slot->world();
 
-    auto elem_slot = [&] (u32 index) {
+    auto elem_slot = [&] (size_t index) {
         if (!new_slots.contains(index))
             new_slots[index] = world.slot(elem_type, slot->frame(), slot->debug());
         return new_slots[index];

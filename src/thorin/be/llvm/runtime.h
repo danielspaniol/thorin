@@ -3,6 +3,10 @@
 
 #include <memory>
 
+#ifdef _MSC_VER
+#pragma warning( disable: 4267 4244; once: 4624 4291 4146 4141 )
+#endif
+
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 

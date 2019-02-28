@@ -1102,8 +1102,8 @@ std::ostream& CCodeGen::emit(const Def* def) {
         Array<std::string> outputs(out_size, std::string(""));
         for (auto use : assembly->uses()) {
             auto extract = use->as<Extract>();
-            size_t index = primlit_value<unsigned>(extract->index());
-            if (index == 0)
+            size_t index = primlit_value<size_t>(extract->index());
+            if (index == 0_s)
                 continue;   // skip the mem
 
             assert(outputs[index - 1] == "" && "Each use must belong to a unique index.");
