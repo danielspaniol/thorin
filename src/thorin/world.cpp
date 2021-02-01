@@ -625,16 +625,15 @@ const Def* World::gid2def(u32 gid) {
 
 #endif
 
-const Def* World::op_grad(const Def* /*fn*/, const Def* /*dbg*/) {
-#if 0
-    if (fn->type()->isa<Pi>()) {
-        auto ds_fn = cps2ds(fn);
-        auto ds_pi = ds_fn->type()->as<Pi>();
-        auto to_grad = app(data_.op_grad_, {ds_pi->dom(), ds_pi->codom()}, dbg);
-        auto grad = app(to_grad, ds_fn, dbg);
-        return ds2cps(grad);
-    }
-#endif
+const Def *World::op_backdiff(const Def *fn, const Def *dbg) {
+    (void)fn;
+    (void)dbg;
+    THORIN_UNREACHABLE;
+}
+
+const Def *World::op_fwddiff(const Def *fn, const Def *dbg) {
+    (void)fn;
+    (void)dbg;
     THORIN_UNREACHABLE;
 }
 

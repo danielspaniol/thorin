@@ -368,8 +368,11 @@ public:
 
     /// @name AD
     //@{
-    const Def* op_grad(const Def* fn, const Def* dbg = {});
+    const Def* op_backdiff(const Def* fn, const Def* dbg = {});
+    const Def* op_fwddiff(const Def* fn, const Def* dbg = {});
     const Def* type_tangent_vector(const Def* primal_type, const Def* dbg = {});
+    const Def* back_diff_stack_push(const Def* mem, const Def* val) {}
+    const Def* back_diff_stack_pop(const Def* mem, const Def* val) {}
     //@}
 
     /// @name helpers
@@ -622,7 +625,6 @@ private:
         const Axiom* atomic_;
         const Axiom* lift_;
         const Axiom* bitcast_;
-        const Axiom* grad_;
         const Axiom* lea_;
         const Axiom* load_;
         const Axiom* slot_;
@@ -631,7 +633,8 @@ private:
         const Axiom* type_mem_;
         const Axiom* type_ptr_;
         const Axiom* type_real_;
-        const Axiom* type_tangent_vector_;
+        const Axiom* op_backdiff_;
+        const Axiom* op_fwddiff_;
         std::string name_;
         Externals externals_;
         Sea defs_;

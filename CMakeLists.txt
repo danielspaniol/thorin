@@ -8,6 +8,8 @@ set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS 1)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 option(THORIN_PROFILE "profile complexity in thorin::HashTable - only works in Debug build" ON)
 
