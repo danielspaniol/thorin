@@ -1,5 +1,4 @@
 #include "thorin/util/bitset.h"
-#include "thorin/util/stream.h"
 
 namespace thorin {
 

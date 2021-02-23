@@ -179,6 +179,14 @@ auto map(const R& r, F f) { return range(map_iterator(r.begin(), f), map_iterato
 
 //------------------------------------------------------------------------------
 
+template<class T, class = void>
+struct is_range : std::false_type {};
+template<class T>
+struct is_range<T, std::void_t<decltype(std::declval<T>().begin()), decltype(std::declval<T>().end())>> : std::true_type {};
+template<class T> static constexpr bool is_range_v = is_range<T>::value;
+
+//------------------------------------------------------------------------------
+
 }
 
 #endif

@@ -7,7 +7,6 @@
 #include "thorin/analyses/cfg.h"
 #include "thorin/util/array.h"
 #include "thorin/util/cast.h"
-#include "thorin/util/ycomp.h"
 
 namespace thorin {
 
@@ -19,7 +18,7 @@ template<bool> class LoopTreeBuilder;
  * Check out G. Ramalingam, "On Loops, Dominators, and Dominance Frontiers", 1999, for more information.
  */
 template<bool forward>
-class LoopTree : public YComp {
+class LoopTree {
 public:
     class Head;
 
@@ -32,20 +31,19 @@ public:
     * The root node is a @p Head without any CFNode%s but further children and @p depth_ -1.
     * Thus, the forest is pooled into a tree.
     */
-    class Base : public RuntimeCast<Base>, public Streamable {
+    class Base : public RuntimeCast<Base>, public Streamable<LoopTree<forward>> {
     public:
         enum class Node { Head, Leaf };
 
-    protected:
         Base(Node node, Head* parent, int depth, const std::vector<const CFNode*>&);
+        virtual ~Base() {}
 
-    public:
         Node node() const { return node_; }
         int depth() const { return depth_; }
         const Head* parent() const { return parent_; }
         ArrayRef<const CFNode*> cf_nodes() const { return cf_nodes_; }
         size_t num_cf_nodes() const { return cf_nodes().size(); }
-        std::ostream& indent() const;
+        virtual Stream& stream(Stream&) const = 0;
 
     protected:
         Node node_;
@@ -66,7 +64,7 @@ public:
         const Base* child(size_t i) const { return children_[i].get(); }
         size_t num_children() const { return children().size(); }
         bool is_root() const { return Base::parent_ == 0; }
-        virtual std::ostream& stream(std::ostream&) const override;
+        Stream& stream(Stream&) const override;
 
         static constexpr auto Node = Base::Node::Head;
 
@@ -91,7 +89,7 @@ public:
         const CFNode* cf_node() const { return Leaf::cf_nodes().front(); }
         /// Index of a DFS of the @p LoopTree's @p Leaf%s.
         size_t index() const { return index_; }
-        virtual std::ostream& stream(std::ostream&) const override;
+        Stream& stream(Stream&) const override;
 
         static constexpr auto Node = Base::Node::Leaf;
 
@@ -108,7 +106,6 @@ public:
     const CFG<forward>& cfg() const { return cfg_; }
     const Head* root() const { return root_.get(); }
     const Leaf* operator[](const CFNode* n) const { return find(leaves_, n); }
-    virtual void stream_ycomp(std::ostream& out) const override;
 
 private:
     static void get_nodes(std::vector<const Base *>& nodes, const Base* node) {

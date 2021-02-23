@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "thorin/config.h"
+#include "thorin/util/stream.h"
 #include "thorin/util/utility.h"
 
 namespace thorin {
@@ -24,7 +25,65 @@ using hash_t = u32;
 
 void debug_hash();
 
-/// Magic numbers from http://www.isthe.com/chongo/tech/comp/fnv/index.html#FNV-param .
+// port from https://en.wikipedia.org/wiki/MurmurHash
+
+inline hash_t murmur_32_scramble(hash_t k) {
+    k *= 0xcc9e2d51;
+    k = (k << 15) | (k >> 17);
+    k *= 0x1b873593;
+    return k;
+}
+
+inline hash_t murmur3(hash_t h, uint32_t key) {
+    h ^= murmur_32_scramble(key);
+    h = (h << 13) | (h >> 19);
+    h = h * 5 + 0xe6546b64;
+    return h;
+}
+
+inline hash_t murmur3(hash_t h, uint64_t key) {
+    hash_t k = hash_t(key);
+    h ^= murmur_32_scramble(k);
+    h = (h << 13) | (h >> 19);
+    h = h * 5 + 0xe6546b64;
+    k = hash_t(key >> 32);
+    h ^= murmur_32_scramble(k);
+    h = (h << 13) | (h >> 19);
+    h = h * 5 + 0xe6546b64;
+    return h;
+}
+
+inline hash_t murmur3_rest(hash_t h, uint8_t key) {
+    h ^= murmur_32_scramble(key);
+    return h;
+}
+
+inline hash_t murmur3_rest(hash_t h, uint16_t key) {
+    h ^= murmur_32_scramble(key);
+    return h;
+}
+
+inline hash_t murmur3_finalize(hash_t h, hash_t len) {
+    h ^= len;
+	h ^= h >> 16;
+	h *= 0x85ebca6b;
+	h ^= h >> 13;
+	h *= 0xc2b2ae35;
+	h ^= h >> 16;
+	return h;
+}
+
+/// use for a single value to hash
+inline hash_t murmur3(hash_t h) {
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    return h;
+}
+
+/// Magic numbers from http://www.isthe.com/chongo/tech/comp/fnv/index.html#FNV-var .
 struct FNV1 {
     static const hash_t offset = 2166136261_u32;
     static const hash_t prime  = 16777619_u32;
@@ -57,15 +116,6 @@ hash_t hash_combine(hash_t seed, T val, Args&&... args) {
 template<class T>
 hash_t hash_begin(T val) { return hash_combine(FNV1::offset, val); }
 inline hash_t hash_begin() { return FNV1::offset; }
-
-inline hash_t murmur3(hash_t h) {
-    h ^= h >> 16_u32;
-    h *= 0x85ebca6b_u32;
-    h ^= h >> 13_u32;
-    h *= 0xc2b2ae35_u32;
-    h ^= h >> 16_u32;
-    return h;
-}
 
 hash_t hash(const char* s);
 
@@ -248,9 +298,6 @@ public:
         if (size_ >= capacity_/4_s + capacity_/2_s)
             rehash(capacity_*4_s);
 
-#if THORIN_ENABLE_CHECKS
-        ++id_;
-#endif
         return emplace_no_rehash(std::forward<Args>(args)...);
     }
 
@@ -283,9 +330,6 @@ public:
                 changed |= array_emplace(*i).second;
         }
 
-#if THORIN_ENABLE_CHECKS
-        ++id_;
-#endif
         return changed;
     }
     //@}
@@ -404,6 +448,8 @@ public:
             delete[] old_nodes;
     }
 
+    void dump() const { Stream s; s.fmt("[{, }]\n", *this); }
+
     friend void swap(HashTable& t1, HashTable& t2) {
         using std::swap;
 
@@ -437,6 +483,9 @@ private:
     template<class... Args>
     std::pair<iterator,bool> emplace_no_rehash(Args&&... args) {
         using std::swap;
+#if THORIN_ENABLE_CHECKS
+        ++id_;
+#endif
         value_type n(std::forward<Args>(args)...);
         auto& k = key(&n);
 
@@ -463,13 +512,15 @@ private:
 
 #if THORIN_ENABLE_PROFILING
     void debug(size_t i) {
-        auto dib = probe_distance(i);
-        if (dib > 2_s*log2(capacity())) {
-            // don't use LOG here - this results in a header dependency hell
-            printf("poor hash function; element %zu has distance %zu with size/capacity: %zu/%zu\n", i, dib, size(), capacity());
-            for (size_t j = mod(i-dib); j != i; j = mod(j+1))
-                printf("elem:desired_pos:hash: %zu:%zu:%" PRIu32 "\n", j, desired_pos(key(&nodes_[j])), hash(j));
-            debug_hash();
+        if (capacity() >= 32) {
+            auto dib = probe_distance(i);
+            if (dib > 2_s*log2(capacity())) {
+                // don't use LOG here - this results in a header dependency hell
+                printf("poor hash function; element %zu has distance %zu with size/capacity: %zu/%zu\n", i, dib, size(), capacity());
+                for (size_t j = mod(i-dib); j != i; j = mod(j+1))
+                    printf("elem:desired_pos:hash: %zu:%zu:%" PRIu32 "\n", j, desired_pos(key(&nodes_[j])), hash(j));
+                debug_hash();
+            }
         }
     }
 #else
@@ -545,7 +596,7 @@ private:
 //------------------------------------------------------------------------------
 
 /**
- * This container is for the most part compatible with <tt>std::unordered_set</tt>.
+ * This container is for the most part compatible with <code>std::unordered_set</code>.
  * We use our own implementation in order to have a consistent and deterministic behavior across different platforms.
  */
 template<class Key, class H = typename Key::Hash, size_t StackCapacity = 4>
@@ -571,15 +622,13 @@ public:
         : Super(ilist)
     {}
 
-    void dump() const { stream_list(std::cout, *this, [&] (const auto& elem) { std::cout << elem; }, "{", "}\n"); }
-
     friend void swap(HashSet& s1, HashSet& s2) { swap(static_cast<Super&>(s1), static_cast<Super&>(s2)); }
 };
 
 //------------------------------------------------------------------------------
 
 /**
- * This container is for the most part compatible with <tt>std::unordered_map</tt>.
+ * This container is for the most part compatible with <code>std::unordered_map</code>.
  * We use our own implementation in order to have a consistent and deterministic behavior across different platforms.
  */
 template<class Key, class T, class H = typename Key::Hash, size_t StackCapacity = 4>
@@ -610,14 +659,54 @@ public:
     std::optional<mapped_type> lookup(const key_type& k) const {
         auto i = Super::find(k);
         return i == Super::cend() ? std::nullopt : std::optional(i->second);
-
     }
-    mapped_type& operator[](const key_type& key) { return Super::insert(value_type(key, T())).first->second; }
-    mapped_type& operator[](key_type&& key) { return Super::insert(value_type(std::move(key), T())).first->second; }
 
-    void dump() const {
-        stream_list(std::cout, *this, [&] (const auto& p) { std::cout << p.first << " : " << p.second; }, "{", "}\n");
-    }
+    /**
+     * When using @c operator[] some really subtle bugs might happen:
+    @code
+        auto&& ref = map[key];
+        // some operations that might provoke a rehash like insert or erase
+        ref = sth; // broken!
+    @endcode
+     * Even more sublte is this as the order of evaluation is implementation-defined in C++:
+    @code
+        map[key] = f(args);
+    @endcode
+     * If your C++ compiler chooses to @em first evaluate @c operator[],
+     * and @em then the function call and the function call performs @p insert/erase operations, the code is broken.
+     * This wrapper class catches these cases.
+     * The downside is that you have to use @p operator* or @p operator-> to access the wrapped value similar to @c std::optional.
+     */
+    struct mapped_ref {
+        mapped_ref([[maybe_unused]] HashMap* map, mapped_type& ref)
+            : ref_(ref)
+#if THORIN_ENABLE_CHECKS
+            , map_(map)
+            , id_(map->id())
+#endif
+        {}
+
+        mapped_type& operator=(const mapped_type& other) {
+#if THORIN_ENABLE_CHECKS
+            assert(map_->id() == id_);
+#endif
+            ref_ = other;
+            return ref_;
+        }
+
+        mapped_type* operator->() const { return &ref_; }
+        mapped_type& operator *() const { return  ref_; }
+
+    private:
+        mapped_type& ref_;
+#if THORIN_ENABLE_CHECKS
+        HashMap* map_;
+        int id_;
+#endif
+    };
+
+    mapped_ref operator[](const key_type& key) { return {this, Super::insert(value_type(key, T())).first->second}; }
+    mapped_ref operator[](key_type&& key) { return {this, Super::insert(value_type(std::move(key), T())).first->second}; }
 
     friend void swap(HashMap& m1, HashMap& m2) { swap(static_cast<Super&>(m1), static_cast<Super&>(m2)); }
 };

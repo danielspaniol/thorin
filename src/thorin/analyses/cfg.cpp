@@ -5,11 +5,11 @@
 #include <memory>
 #include <stack>
 
+#include "thorin/world.h"
 #include "thorin/analyses/domfrontier.h"
 #include "thorin/analyses/domtree.h"
 #include "thorin/analyses/looptree.h"
 #include "thorin/analyses/scope.h"
-#include "thorin/util/log.h"
 #include "thorin/util/utility.h"
 
 namespace thorin {
@@ -23,7 +23,7 @@ void CFNode::link(const CFNode* other) const {
     other->preds_.emplace(this);
 }
 
-std::ostream& CFNode::stream(std::ostream& out) const { return streamf(out, "{}", nominal()); }
+Stream& CFNode::stream(Stream& s) const { return s << nom(); }
 
 //------------------------------------------------------------------------------
 
@@ -48,10 +48,10 @@ CFA::CFA(const Scope& scope)
         DefSet done;
 
         auto enqueue = [&] (const Def* def) {
-            if (def->isa<Param>()) return;
+            if (def->isa<Var>()) return;
             // TODO maybe optimize a little bit by using the order
-            if (scope.contains(def) && done.emplace(def).second) {
-                if (auto dst = def->isa_nominal()) {
+            if (scope.bound(def) && done.emplace(def).second) {
+                if (auto dst = def->isa_nom()) {
                     cfg_enqueue(dst);
                     node(src)->link(node(dst));
                 } else
@@ -73,10 +73,10 @@ CFA::CFA(const Scope& scope)
 }
 
 const CFNode* CFA::node(Def* nom) {
-    auto& n = nodes_[nom];
-    if (n == nullptr)
+    auto&& n = nodes_[nom];
+    if (*n == nullptr)
         n = new CFNode(nom);
-    return n;
+    return *n;
 }
 
 CFA::~CFA() {
@@ -152,14 +152,13 @@ void CFA::verify() {
     for (const auto& p : nodes()) {
         auto in = p.second;
         if (in != entry() && in->preds_.size() == 0) {
-            VLOG("missing predecessors: {}", in->nominal());
+            world().VLOG("missing predecessors: {}", in->nom());
             error = true;
         }
     }
 
     if (error) {
         // TODO
-        //ycomp();
         assert(false && "CFG not sound");
     }
 }
@@ -168,8 +167,7 @@ void CFA::verify() {
 
 template<bool forward>
 CFG<forward>::CFG(const CFA& cfa)
-    : YComp(cfa.scope(), forward ? "f_cfg" : "b_cfg")
-    , cfa_(cfa)
+    : cfa_(cfa)
     , rpo_(*this)
 {
     auto index = post_order_visit(entry(), size());
@@ -190,14 +188,6 @@ size_t CFG<forward>::post_order_visit(const CFNode* n, size_t i) {
     rpo_[n] = n;
     return n_index;
 }
-
-template<bool forward>
-void CFG<forward>::stream_ycomp(std::ostream& out) const {
-    thorin::ycomp(out, YCompOrientation::TopToBottom, scope(), range(reverse_post_order()),
-        [&] (const CFNode* n) { return range(succs(n)); }
-    );
-}
-
 
 template<bool forward> const CFNodes& CFG<forward>::preds(const CFNode* n) const { assert(n != nullptr); return forward ? n->preds() : n->succs(); }
 template<bool forward> const CFNodes& CFG<forward>::succs(const CFNode* n) const { assert(n != nullptr); return forward ? n->succs() : n->preds(); }

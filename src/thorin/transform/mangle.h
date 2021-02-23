@@ -1,6 +1,7 @@
 #ifndef THORIN_TRANSFORM_MANGLE_H
 #define THORIN_TRANSFORM_MANGLE_H
 
+#include "thorin/lam.h"
 #include "thorin/analyses/scope.h"
 
 namespace thorin {
@@ -18,7 +19,7 @@ public:
 
 private:
     const Def* mangle(const Def*);
-    bool within(const Def* def) { return scope().contains(def) || defs_.contains(def); }
+    bool within(const Def* def) { return scope().bound(def) || defs_.contains(def); }
 
     const Scope& scope_;
     Defs args_;
@@ -37,11 +38,11 @@ inline Lam* drop(const Scope& scope, Defs args) {
 Lam* drop(const App*);
 
 inline Lam* lift(const Scope& scope, Defs defs) {
-    return mangle(scope, Array<const Def*>(scope.entry()->num_params()), defs);
+    return mangle(scope, Array<const Def*>(scope.entry()->num_vars()), defs);
 }
 
 inline Lam* clone(const Scope& scope) {
-    return mangle(scope, Array<const Def*>(scope.entry()->num_params()), Defs());
+    return mangle(scope, Array<const Def*>(scope.entry()->num_vars()), Defs());
 }
 
 }

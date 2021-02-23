@@ -6,7 +6,7 @@
 
 namespace thorin {
 
-class Schedule : public Streamable {
+class Schedule : public Streamable<Schedule> {
 public:
     enum Mode { Early, Late, Smart };
 
@@ -18,7 +18,7 @@ public:
         Block() {}
 
         const CFNode* node() const { return node_; }
-        Def* nominal() const { return node()->nominal(); }
+        Def* nom() const { return node()->nom(); }
         ArrayRef<const Def*> defs() const { return defs_; }
         size_t index() const { return index_; }
 
@@ -52,23 +52,20 @@ public:
 
     Mode mode() const { return mode_; }
     const Scope& scope() const { return scope_; }
-    const World& world() const { return scope().world(); }
+    Def* entry() const { return scope().entry(); }
+    Def* exit()  const { return scope().exit(); }
+    World& world() const { return scope().world(); }
+    std::string name() const { return scope().name(); }
     const CFA& cfa() const { return scope().cfa(); }
     const F_CFG& cfg() const { return scope().f_cfg(); }
     ArrayRef<Block> blocks() const { return blocks_; }
     size_t size() const { return blocks_.size(); }
     const Block& operator[](const CFNode* n) const { return blocks_[indices_[n]]; }
     static size_t index(const Block& block) { return block.index(); }
-    void verify();
-
-    // Note that we don't use overloading for the following methods in order to have them accessible from gdb.
-    virtual std::ostream& stream(std::ostream&) const override;  ///< Streams thorin to file @p out.
-    void write_thorin(const char* filename) const;               ///< Dumps thorin to file with name @p filename.
-    void thorin() const;                                         ///< Dumps thorin to a file with an auto-generated file name.
-
     typedef ArrayRef<const Block>::const_iterator const_iterator;
     const_iterator begin() const { return blocks().begin(); }
     const_iterator end() const { return blocks().end(); }
+    Stream& stream(Stream&) const;
 
 private:
     Block& operator[](const CFNode* n) { return blocks_[indices_[n]]; }
@@ -83,7 +80,6 @@ private:
 };
 
 inline Schedule schedule(const Scope& scope, Schedule::Mode mode = Schedule::Smart) { return Schedule(scope, mode); }
-void verify_mem(World& );
 
 }
 

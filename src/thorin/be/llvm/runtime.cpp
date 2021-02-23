@@ -10,7 +10,6 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/SourceMgr.h>
 
-#include "thorin/util/log.h"
 #include "thorin/be/llvm/llvm.h"
 #include "thorin/be/llvm/runtime.inc"
 
@@ -31,7 +30,7 @@ Runtime::Runtime(llvm::LLVMContext& context,
 }
 
 llvm::Function* Runtime::get(const char* name) {
-    auto result = llvm::cast<llvm::Function>(target_.getOrInsertFunction(name, runtime_->getFunction(name)->getFunctionType()));
+    auto result = llvm::cast<llvm::Function>(target_.getOrInsertFunction(name, runtime_->getFunction(name)->getFunctionType()).getCallee()->stripPointerCasts());
     assert(result != nullptr && "Required runtime function could not be resolved");
     return result;
 }
@@ -39,8 +38,8 @@ llvm::Function* Runtime::get(const char* name) {
 static bool contains_ptrtype(const Def* type) {
     if (isa<Tag::Ptr>(type)) return false;
     switch (type->node()) {
-        case Node::Variadic: return contains_ptrtype(type->as<Variadic>()->body());
-        case Node::Pi:       return false;
+        case Node::Arr: return contains_ptrtype(type->as<Arr>()->body());
+        case Node::Pi:  return false;
         case Node::Sigma: {
             // TODO deal with recursive sigmas
             bool good = true;
@@ -54,23 +53,24 @@ static bool contains_ptrtype(const Def* type) {
 }
 
 Lam* Runtime::emit_host_code(CodeGen& code_gen, Platform platform, const std::string& ext, Lam* lam) {
+    auto& world = lam->world();
+
     // to-target is the desired kernel call
     // target(mem, device, (dim.x, dim.y, dim.z), (block.x, block.y, block.z), body, return, free_vars)
-    auto target = lam->app()->callee()->as_nominal<Lam>();
-    assert_unused(target->is_intrinsic());
-    assert(lam->app()->num_args() >= LaunchArgs::Num && "required arguments are missing");
+    //auto target = lam->body()->as<App>()->callee()->as_nom<Lam>();
+    assert(lam->body()->as<App>()->num_args() >= LaunchArgs::Num && "required arguments are missing");
 
     // arguments
-    auto target_device_id = code_gen.lookup(lam->app()->arg(LaunchArgs::Device));
+    auto target_device_id = code_gen.lookup(lam->body()->as<App>()->arg(LaunchArgs::Device));
     auto target_platform = builder_.getInt32(platform);
     auto target_device = builder_.CreateOr(target_platform, builder_.CreateShl(target_device_id, builder_.getInt32(4)));
-    auto it_space = lam->app()->arg(LaunchArgs::Space)->as<Tuple>();
-    auto it_config = lam->app()->arg(LaunchArgs::Config)->as<Tuple>();
-    auto kernel = lam->app()->arg(LaunchArgs::Body)->as<Global>()->init()->as<Lam>();
+    auto it_space = lam->body()->as<App>()->arg(LaunchArgs::Space)->as<Tuple>();
+    auto it_config = lam->body()->as<App>()->arg(LaunchArgs::Config)->as<Tuple>();
+    auto kernel = lam->body()->as<App>()->arg(LaunchArgs::Body)->as<Global>()->init()->as<Lam>();
 
-    auto kernel_name = builder_.CreateGlobalStringPtr(kernel->name());
+    auto kernel_name = builder_.CreateGlobalStringPtr(kernel->debug().name);
     auto file_name = builder_.CreateGlobalStringPtr(lam->world().name() + ext);
-    const size_t num_kernel_args = lam->app()->num_args() - LaunchArgs::Num;
+    const size_t num_kernel_args = lam->body()->as<App>()->num_args() - LaunchArgs::Num;
 
     // allocate argument pointers, sizes, and types
     llvm::Value* args   = code_gen.emit_alloca(llvm::ArrayType::get(builder_.getInt8PtrTy(), num_kernel_args), "args");
@@ -80,35 +80,35 @@ Lam* Runtime::emit_host_code(CodeGen& code_gen, Platform platform, const std::st
 
     // fill array of arguments
     for (size_t i = 0; i < num_kernel_args; ++i) {
-        auto target_arg = lam->app()->arg(i + LaunchArgs::Num);
+        auto target_arg = lam->body()->as<App>()->arg(i + LaunchArgs::Num);
         const auto target_val = code_gen.lookup(target_arg);
 
         KernelArgType arg_type;
         llvm::Value*  void_ptr;
-        if (target_arg->type()->isa<Variadic>() || target_arg->type()->isa<Sigma>()) {
-            auto alloca = code_gen.emit_alloca(target_val->getType(), target_arg->name());
+        if (target_arg->type()->isa<Arr>() || target_arg->type()->isa<Sigma>()) {
+            auto alloca = code_gen.emit_alloca(target_val->getType(), target_arg->debug().name);
             builder_.CreateStore(target_val, alloca);
 
             // check if argument type contains pointers
             if (!contains_ptrtype(target_arg->type()))
-                WDEF(target_arg, "argument '{}' of aggregate type '{}' contains pointer (not supported in OpenCL 1.2)", target_arg, target_arg->type());
+                world.wdef(target_arg, "argument '{}' of aggregate type '{}' contains pointer (not supported in OpenCL 1.2)", target_arg, target_arg->type());
 
             void_ptr = builder_.CreatePointerCast(alloca, builder_.getInt8PtrTy());
             arg_type = KernelArgType::Struct;
         } else if (auto ptr = isa<Tag::Ptr>(target_arg->type())) {
             auto [rtype, addr_space] = ptr->args<2>();
 
-            if (!rtype->isa<Variadic>())
-                EDEF(target_arg, "currently only pointers to arrays supported as kernel argument; argument has different type: {}", ptr);
+            if (!rtype->isa<Arr>())
+                world.edef(target_arg, "currently only pointers to arrays supported as kernel argument; argument has different type: {}", ptr);
 
-            auto alloca = code_gen.emit_alloca(builder_.getInt8PtrTy(), target_arg->name());
+            auto alloca = code_gen.emit_alloca(builder_.getInt8PtrTy(), target_arg->debug().name);
             auto target_ptr = builder_.CreatePointerCast(target_val, builder_.getInt8PtrTy());
             builder_.CreateStore(target_ptr, alloca);
             void_ptr = builder_.CreatePointerCast(alloca, builder_.getInt8PtrTy());
             arg_type = KernelArgType::Ptr;
         } else {
             // normal variable
-            auto alloca = code_gen.emit_alloca(target_val->getType(), target_arg->name());
+            auto alloca = code_gen.emit_alloca(target_val->getType(), target_arg->debug().name);
             builder_.CreateStore(target_val, alloca);
 
             void_ptr = builder_.CreatePointerCast(alloca, builder_.getInt8PtrTy());
@@ -120,12 +120,12 @@ Lam* Runtime::emit_host_code(CodeGen& code_gen, Platform platform, const std::st
         auto align_ptr = builder_.CreateInBoundsGEP(aligns, llvm::ArrayRef<llvm::Value*>{builder_.getInt32(0), builder_.getInt32(i)});
         auto type_ptr  = builder_.CreateInBoundsGEP(types,  llvm::ArrayRef<llvm::Value*>{builder_.getInt32(0), builder_.getInt32(i)});
 
-        auto size = layout_.getTypeStoreSize(target_val->getType());
+        auto size = layout_.getTypeStoreSize(target_val->getType()).getFixedSize();
         if (auto struct_type = llvm::dyn_cast<llvm::StructType>(target_val->getType())) {
             // In the case of a structure, do not include the padding at the end in the size
             auto last_elem   = struct_type->getStructNumElements() - 1;
             auto last_offset = layout_.getStructLayout(struct_type)->getElementOffset(last_elem);
-            size = last_offset + layout_.getTypeStoreSize(struct_type->getStructElementType(last_elem));
+            size = last_offset + layout_.getTypeStoreSize(struct_type->getStructElementType(last_elem)).getFixedSize();
         }
 
         builder_.CreateStore(void_ptr, arg_ptr);
@@ -165,7 +165,7 @@ Lam* Runtime::emit_host_code(CodeGen& code_gen, Platform platform, const std::st
                   args, sizes, aligns, types,
                   builder_.getInt32(num_kernel_args));
 
-    return lam->app()->arg(LaunchArgs::Return)->as_nominal<Lam>();
+    return lam->body()->as<App>()->arg(LaunchArgs::Return)->as_nom<Lam>();
 }
 
 llvm::Value* Runtime::launch_kernel(llvm::Value* device,

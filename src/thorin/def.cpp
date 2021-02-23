@@ -1,67 +1,128 @@
 #include "thorin/def.h"
 
 #include <algorithm>
-#include <iostream>
-#include <sstream>
 #include <stack>
 
 #include "thorin/rewrite.h"
-#include "thorin/util.h"
 #include "thorin/world.h"
-#include "thorin/util/log.h"
+#include "thorin/analyses/scope.h"
 #include "thorin/util/utility.h"
 
 namespace thorin {
 
-namespace detail {
-    const Def* world_extract(World& world, const Def* def, u64 i, Debug dbg) { return world.extract(def, i, dbg); }
+/*
+ * constructors
+ */
+
+Def::Def(node_t node, const Def* type, Defs ops, uint64_t fields, const Def* dbg)
+    : fields_(fields)
+    , node_(unsigned(node))
+    , nom_(false)
+    , var_(false)
+    , const_(true)
+    , order_(0)
+    , num_ops_(ops.size())
+    , dbg_(dbg)
+    , type_(type)
+{
+    gid_ = world().next_gid();
+    std::copy(ops.begin(), ops.end(), ops_ptr());
+
+    if (node == Node::Space) {
+        hash_ = murmur3(gid());
+    } else {
+        hash_ = type->gid();
+        for (auto op : ops)
+            hash_ = murmur3(hash_, u32(op->gid()));
+        hash_ = murmur3(hash_, fields_);
+        hash_ = murmur3_rest(hash_, u8(node));
+        hash_ = murmur3_finalize(hash_, num_ops());
+    }
+}
+
+Def::Def(node_t node, const Def* type, size_t num_ops, uint64_t fields, const Def* dbg)
+    : fields_(fields)
+    , node_(node)
+    , nom_(true)
+    , var_(false)
+    , const_(false)
+    , order_(0)
+    , num_ops_(num_ops)
+    , dbg_(dbg)
+    , type_(type)
+{
+    gid_ = world().next_gid();
+    hash_ = murmur3(gid());
+    std::fill_n(ops_ptr(), num_ops, nullptr);
+    if (!type->is_const()) type->uses_.emplace(this, -1);
+}
+
+Kind::Kind(World& world)
+    : Def(Node, (const Def*) world.space(), Defs{}, 0, nullptr)
+{}
+
+Nat::Nat(World& world)
+    : Def(Node, world.kind(), Defs{}, 0, nullptr)
+{}
+
+/*
+ * rebuild
+ */
+
+const Def* App    ::rebuild(World& w, const Def*  , Defs o, const Def* dbg) const { return w.app(o[0], o[1], dbg); }
+const Def* Arr    ::rebuild(World& w, const Def*  , Defs o, const Def* dbg) const { return w.arr(o[0], o[1], dbg); }
+const Def* Axiom  ::rebuild(World& w, const Def* t, Defs  , const Def* dbg) const { return w.axiom(normalizer(), t, tag(), flags(), dbg); }
+const Def* Et     ::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.et(t, o, dbg); }
+const Def* Extract::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.extract_(t, o[0], o[1], dbg); }
+const Def* Global ::rebuild(World& w, const Def*  , Defs o, const Def* dbg) const { return w.global(o[0], o[1], is_mutable(), dbg); }
+const Def* Insert ::rebuild(World& w, const Def*  , Defs o, const Def* dbg) const { return w.insert(o[0], o[1], o[2], dbg); }
+const Def* Kind   ::rebuild(World& w, const Def*  , Defs  , const Def*    ) const { return w.kind(); }
+const Def* Lam    ::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.lam(t->as<Pi>(), o[0], o[1], dbg); }
+const Def* Lit    ::rebuild(World& w, const Def* t, Defs  , const Def* dbg) const { return w.lit(t, get(), dbg); }
+const Def* Nat    ::rebuild(World& w, const Def*  , Defs  , const Def*    ) const { return w.type_nat(); }
+const Def* Pack   ::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.pack(t->arity(), o[0], dbg); }
+const Def* Var  ::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.var(t, o[0]->as_nom(), dbg); }
+const Def* Pi     ::rebuild(World& w, const Def*  , Defs o, const Def* dbg) const { return w.pi(o[0], o[1], dbg); }
+const Def* Pick   ::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.pick(t, o[0], dbg); }
+const Def* Proxy  ::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.proxy(t, o, as<Proxy>()->id(), as<Proxy>()->flags(), dbg); }
+const Def* Sigma  ::rebuild(World& w, const Def*  , Defs o, const Def* dbg) const { return w.sigma(o, dbg); }
+const Def* Space  ::rebuild(World& w, const Def*  , Defs  , const Def*    ) const { return w.space(); }
+const Def* Test   ::rebuild(World& w, const Def*  , Defs o, const Def* dbg) const { return w.test(o[0], o[1], o[2], o[3], dbg); }
+const Def* Tuple  ::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.tuple(t, o, dbg); }
+const Def* Vel    ::rebuild(World& w, const Def* t, Defs o, const Def* dbg) const { return w.vel(t, o[0], dbg); }
+
+template<bool up> const Def* TExt  <up>::rebuild(World& w, const Def* t, Defs  , const Def* dbg) const { return w.ext  <up>(t,    dbg); }
+template<bool up> const Def* TBound<up>::rebuild(World& w, const Def*  , Defs o, const Def* dbg) const { return w.bound<up>(   o, dbg); }
+/*
+ * stub
+ */
+
+Lam*   Lam  ::stub(World& w, const Def* t, const Def* dbg) { return w.nom_lam  (t->as<Pi>(), cc(), dbg); }
+Pi*    Pi   ::stub(World& w, const Def* t, const Def* dbg) { return w.nom_pi   (t, dbg); }
+Sigma* Sigma::stub(World& w, const Def* t, const Def* dbg) { return w.nom_sigma(t, num_ops(), dbg); }
+Arr*   Arr  ::stub(World& w, const Def* t, const Def* dbg) { return w.nom_arr  (t, shape(), dbg); }
+
+template<bool up> TBound<up>* TBound<up>::stub(World& w, const Def* t, const Def* dbg) { return w.nom_bound<up>(t, num_ops(), dbg); }
+
+/*
+ * restructure
+ */
+
+const Pi* Pi::restructure() {
+    if (!is_free(var(), codom())) return world().pi(dom(), codom(), dbg());
+    return nullptr;
+}
+
+const Def* Arr::restructure() {
+    auto& w = world();
+    if (auto n = isa_lit(shape()))
+        return w.sigma(Array<const Def*>(*n, [&](size_t i) { return apply(w.lit_int(*n, i)).back(); }));
+    return nullptr;
 }
 
 /*
  * Def
  */
-
-const Def* Def::arity() const {
-    if (auto sigma    = isa<Sigma   >()) return world().lit_arity(sigma->num_ops());
-    if (auto union_   = isa<Union   >()) return world().lit_arity(union_->num_ops());
-    if (auto variadic = isa<Variadic>()) return variadic->arity();
-    return world().lit_arity_1();
-}
-
-nat_t Def::lit_arity() const {
-    if (auto sigma    = isa<Sigma   >()) return sigma->num_ops();
-    if (auto union_   = isa<Union   >()) return union_->num_ops();
-    if (auto variadic = isa<Variadic>()) return as_lit<nat_t>(variadic->arity());
-    return 1;
-}
-
-bool Def::equal(const Def* other) const {
-    if (this->isa_nominal() || other->isa_nominal())
-        return this == other;
-
-    bool result = this->node() == other->node() && this->fields() == other->fields() && this->num_ops() == other->num_ops() && this->type() == other->type();
-    for (size_t i = 0, e = num_ops(); result && i != e; ++i)
-        result &= this->op(i) == other->op(i);
-    return result;
-}
-
-
-// TODO
-const Def* Def::debug_history() const {
-//#if THORIN_ENABLE_CHECKS
-    //return world().track_history() ? Debug(loc(), world().tuple_str(unique_name())) : debug();
-//#else
-    return debug();
-//#endif
-}
-
-std::string Def::name() const     { return debug() ? tuple2str(debug()->out(0)) : std::string{}; }
-std::string Def::filename() const { return debug() ? tuple2str(debug()->out(1)) : std::string{}; }
-nat_t Def::front_line() const { return debug() ? as_lit<nat_t>(debug()->out(2)->out(0)) : std::numeric_limits<nat_t>::max(); }
-nat_t Def::front_col()  const { return debug() ? as_lit<nat_t>(debug()->out(2)->out(1)) : std::numeric_limits<nat_t>::max(); }
-nat_t Def::back_line()  const { return debug() ? as_lit<nat_t>(debug()->out(2)->out(2)) : std::numeric_limits<nat_t>::max(); }
-nat_t Def::back_col()   const { return debug() ? as_lit<nat_t>(debug()->out(2)->out(3)) : std::numeric_limits<nat_t>::max(); }
-const Def* Def::meta() const { return debug() ? debug()->out(3) : nullptr; }
 
 const char* Def::node_name() const {
     switch (node()) {
@@ -72,39 +133,122 @@ THORIN_NODE(CODE)
     }
 }
 
-std::string Def::loc() const {
-    std::ostringstream os;
-    os << filename() << ':';
+Defs Def::extended_ops() const {
+    if (isa<Space>()) return Defs();
 
-    if (front_col() == nat_t(-1) || back_col() == nat_t(-1)) {
-        if (front_line() != back_line())
-            streamf(os, "{} - {}", front_line(), back_line());
-        else
-            streamf(os, "{}", front_line());
-    } else if (front_line() != back_line()) {
-        streamf(os, "{} col {} - {} col {}", front_line(), front_col(), back_line(), back_col());
-    } else if (front_col() != back_col()) {
-        streamf(os, "{} col {} - {}", front_line(), front_col(), back_col());
-    } else {
-        streamf(os, "{} col {}", front_line(), front_col());
+    size_t offset = dbg() ? 2 : 1;
+    return Defs((is_set() ? num_ops_ : 0) + offset, ops_ptr() - offset);
+}
+
+const Var* Def::var(const Def* dbg) {
+    auto& w = world();
+    if (auto lam    = isa<Lam  >()) return w.var(lam ->dom(), lam,   dbg);
+    if (auto pi     = isa<Pi   >()) return w.var(pi  ->dom(), pi,    dbg);
+    if (auto sigma  = isa<Sigma>()) return w.var(sigma,          sigma, dbg);
+    if (auto arr    = isa<Arr  >()) return w.var(w.type_int(arr ->shape()), arr,  dbg); // TODO shapes like (2, 3)
+    if (auto pack   = isa<Pack >()) return w.var(w.type_int(pack->shape()), pack, dbg); // TODO shapes like (2, 3)
+    if (isa_bound(this)) return w.var(this, this,  dbg);
+    THORIN_UNREACHABLE;
+}
+
+const Var* Def::var() { return var(nullptr); }
+const Def* Def::var(size_t i) { return var(i, nullptr); }
+size_t     Def::num_vars() { return var()->num_outs(); }
+
+Sort Def::level() const {
+    if (                isa<Space>()) return Sort::Space;
+    if (        type()->isa<Space>()) return Sort::Kind;
+    if (type()->type()->isa<Space>()) return Sort::Type;
+    return Sort::Term;
+}
+
+Sort Def::sort() const {
+    switch (node()) {
+        case Node::Space: return Sort::Space;
+        case Node::Kind:  return Sort::Kind;
+        case Node::Arr:
+        case Node::Nat:
+        case Node::Pi:
+        case Node::Sigma:
+        case Node::Join:
+        case Node::Meet: return Sort::Type;
+        case Node::Global:
+        case Node::Insert:
+        case Node::Lam:
+        case Node::Pack:
+        case Node::Test:
+        case Node::Tuple: return Sort::Term;
+        default:          return Sort(int(type()->sort()) - 1);
     }
+}
 
-    return os.str();
+const Def* Def::arity() const {
+    if (auto sigma  = isa<Sigma>()) return world().lit_nat(sigma ->num_ops());
+    if (auto arr    = isa<Arr  >()) return arr->shape();
+    if (sort() == Sort::Term)       return type()->arity();
+    return world().lit_nat(1);
+}
+
+bool Def::equal(const Def* other) const {
+    if (isa<Space>() || this->isa_nom() || other->isa_nom())
+        return this == other;
+
+    bool result = this->node() == other->node() && this->fields() == other->fields() && this->num_ops() == other->num_ops() && this->type() == other->type();
+    for (size_t i = 0, e = num_ops(); result && i != e; ++i)
+        result &= this->op(i) == other->op(i);
+    return result;
+}
+
+const Def* Def::debug_history() const {
+#if THORIN_ENABLE_CHECKS
+    auto& w = world();
+    if (w.track_history())
+        return dbg() ? w.insert(dbg(), 3_s, 0_s, w.tuple_str(unique_name())) : w.tuple_str(unique_name());
+#endif
+    return dbg();
+}
+
+void Def::set_name(const std::string& n) const {
+    auto& w = world();
+    auto name = w.tuple_str(n);
+
+    if (dbg_ == nullptr) {
+        auto file = w.tuple_str("");
+        auto begin = w.lit_nat_max();
+        auto finis = w.lit_nat_max();
+        auto meta = w.bot(w.bot_kind());
+        dbg_ = w.tuple({name, w.tuple({file, begin, finis}), meta});
+    } else {
+        dbg_ = w.insert(dbg_, 3_s, 0_s, name);
+    }
 }
 
 void Def::finalize() {
     for (size_t i = 0, e = num_ops(); i != e; ++i) {
-        auto o = op(i);
-        assert(o != nullptr);
-        order_ = std::max(order_, o->order_);
-        const auto& p = o->uses_.emplace(this, i);
-        assert_unused(p.second);
+        if (!op(i)->is_const()) {
+            const_ = false;
+            const auto& p = op(i)->uses_.emplace(this, i);
+            assert_unused(p.second);
+        }
+        order_ = std::max(order_, op(i)->order_);
     }
 
+    if (!isa<Space>()) {
+        if (!type()->is_const()) {
+            const_ = false;
+            const auto& p = type()->uses_.emplace(this, -1);
+            assert_unused(p.second);
+        }
+    }
+
+    if (dbg()) const_ &= dbg()->is_const();
     if (isa<Pi>()) ++order_;
+    if (isa<Axiom>()) const_ = true;
+    if (auto var = isa<Var>()) var->nom()->var_ = true;
 }
 
 Def* Def::set(size_t i, const Def* def) {
+    if (op(i) == def) return this;
     if (op(i) != nullptr) unset(i);
 
     if (def != nullptr) {
@@ -127,7 +271,7 @@ void Def::unset(size_t i) {
 }
 
 bool Def::is_set() const {
-    if (!isa_nominal()) {
+    if (!isa_nom()) {
         assert(std::all_of(ops().begin(), ops().end(), [&](auto op) { return op != nullptr; }) && "structurals must be always set");
         return true;
     }
@@ -143,15 +287,10 @@ void Def::make_external() { return world().make_external(this); }
 void Def::make_internal() { return world().make_internal(this); }
 bool Def::is_external() const { return world().is_external(this); }
 
-std::string Def::unique_name() const {
-    std::ostringstream oss;
-    if (!name().empty()) oss << name();
-    oss <<  '_' << gid();
-    return oss.str();
-}
+std::string Def::unique_name() const { return (isa_nom() ? std::string{} : std::string{"%"}) + debug().name + "_" + std::to_string(gid()); }
 
 void Def::replace(Tracker with) const {
-    DLOG("replace: {} -> {}", this, with);
+    world().DLOG("replace: {} -> {}", this, with);
     assert(type() == with->type());
     assert(!is_replaced());
 
@@ -167,144 +306,36 @@ void Def::replace(Tracker with) const {
     }
 }
 
-void Def::dump() const {
-    if (!isa_nominal() && num_ops() > 1)
-        stream_assignment(std::cout);
-    else {
-        std::cout << this;
-        std::cout << std::endl;
-    }
+Array<const Def*> Def::apply(const Def* arg) const {
+    if (auto nom = isa_nom()) return nom->apply(arg);
+    return ops();
 }
 
-/*
- * Lam
- */
+Array<const Def*> Def::apply(const Def* arg) {
+    auto& cache = world().data_.cache_;
+    if (auto res = cache.lookup({this, arg})) return *res;
 
-const Def* Lam::mem_param() {
-    for (size_t i = 0, e = num_params(); i != e; ++i) {
-        auto p = param(i);
-        if (p->type()->isa<Mem>())
-            return p;
-    }
-    return nullptr;
+    return cache[{this, arg}] = rewrite(this, arg);
 }
 
-const Def* Lam::ret_param() {
-    const Def* result = nullptr;
-    for (size_t i = 0, e = num_params(); i != e; ++i) {
-        auto p = param(i);
-        if (p->type()->order() >= 1) {
-            assertf(result == nullptr, "only one ret_param allowed");
-            result = p;
+const Def* Def::reduce() const {
+    auto def = this;
+    while (auto app = def->isa<App>()) {
+        auto callee = app->callee()->reduce();
+        if (callee->isa_nom()) {
+            def = callee->apply(app->arg()).back();
+        } else {
+            def = callee != app->callee() ? world().app(callee, app->arg(), app->dbg()) : app;
+            break;
         }
     }
-    return result;
+    return def;
 }
 
-bool Lam::is_intrinsic() const { return intrinsic() != Intrinsic::None; }
-bool Lam::is_accelerator() const { return Intrinsic::_Accelerator_Begin <= intrinsic() && intrinsic() < Intrinsic::_Accelerator_End; }
-
-void Lam::set_intrinsic() {
-    // TODO this is slow and inelegant - but we want to remove this code anyway
-    auto n = name();
-    auto intrin = Intrinsic::None;
-    if      (n == "cuda")                 intrin = Intrinsic::CUDA;
-    else if (n == "nvvm")                 intrin = Intrinsic::NVVM;
-    else if (n == "opencl")               intrin = Intrinsic::OpenCL;
-    else if (n == "amdgpu")               intrin = Intrinsic::AMDGPU;
-    else if (n == "hls")                  intrin = Intrinsic::HLS;
-    else if (n == "parallel")             intrin = Intrinsic::Parallel;
-    else if (n == "spawn")                intrin = Intrinsic::Spawn;
-    else if (n == "sync")                 intrin = Intrinsic::Sync;
-    else if (n == "anydsl_create_graph")  intrin = Intrinsic::CreateGraph;
-    else if (n == "anydsl_create_task")   intrin = Intrinsic::CreateTask;
-    else if (n == "anydsl_create_edge")   intrin = Intrinsic::CreateEdge;
-    else if (n == "anydsl_execute_graph") intrin = Intrinsic::ExecuteGraph;
-    else if (n == "vectorize")            intrin = Intrinsic::Vectorize;
-    else if (n == "pe_info")              intrin = Intrinsic::PeInfo;
-    else if (n == "reserve_shared")       intrin = Intrinsic::Reserve;
-    else if (n == "atomic")               intrin = Intrinsic::Atomic;
-    else if (n == "cmpxchg")              intrin = Intrinsic::CmpXchg;
-    else if (n == "undef")                intrin = Intrinsic::Undef;
-    else ELOG("unsupported thorin intrinsic");
-
-    set_intrinsic(intrin);
-}
-
-bool Lam::is_basicblock() const { return type()->is_basicblock(); }
-bool Lam::is_returning() const { return type()->is_returning(); }
-
-void Lam::app(const Def* callee, const Def* arg, Debug dbg) {
-    assert(isa_nominal());
-    auto filter = world().lit_false();
-    set(filter, world().app(callee, arg, dbg));
-}
-void Lam::app(const Def* callee, Defs args, Debug dbg) { app(callee, world().tuple(args), dbg); }
-void Lam::branch(const Def* cond, const Def* t, const Def* f, const Def* mem, Debug dbg) { return app(world().op_select(cond, t, f, dbg), mem, dbg); }
-
-void Lam::match(const Def* val, Lam* otherwise, Defs patterns, ArrayRef<Lam*> lams, Debug dbg) {
-    Array<const Def*> args(patterns.size() + 2);
-
-    args[0] = val;
-    args[1] = otherwise;
-    assert(patterns.size() == lams.size());
-    for (size_t i = 0; i < patterns.size(); i++)
-        args[i + 2] = world().tuple({patterns[i], lams[i]}, dbg);
-
-    return app(world().match(val->type(), patterns.size()), args, dbg);
-}
-
-/*
- * Pi
- */
-
-Pi* Pi::set_domain(Defs domains) { return Def::set(0, world().sigma(domains))->as<Pi>(); }
-
-Array<const Def*> Pi::domains() const {
-    size_t n = num_domains();
-    Array<const Def*> domains(n);
-    for (size_t i = 0; i != n; ++i)
-        domains[i] = domain(i);
-    return domains;
-}
-
-size_t Pi::num_domains() const {
-    if (auto sigma = domain()->isa<Sigma>())
-        return sigma->num_ops();
-    return 1;
-}
-
-const Def* Pi::domain(size_t i) const {
-    if (auto sigma = domain()->isa<Sigma>())
-        return sigma->op(i);
-    return domain();
-}
-
-const Def* Pi::codomain(size_t i) const {
-    if (auto sigma = codomain()->isa<Sigma>())
-        return sigma->op(i);
-    return codomain();
-}
-
-bool Pi::is_returning() const {
-    bool ret = false;
-    for (auto op : ops()) {
-        switch (op->order()) {
-            case 1:
-                if (!ret) {
-                    ret = true;
-                    continue;
-                }
-                return false;
-            default: continue;
-        }
-    }
-    return ret;
-}
-
-const Def* Pi::apply(const Def* arg) const {
-    if (auto pi = isa_nominal<Pi>()) return rewrite(pi, arg);
-    return codomain();
+const Def* Def::refine(size_t i, const Def* new_op) const {
+    Array<const Def*> new_ops(ops());
+    new_ops[i] = new_op;
+    return rebuild(world(), type(), new_ops, dbg());
 }
 
 /*
@@ -314,309 +345,15 @@ const Def* Pi::apply(const Def* arg) const {
 const App* Global::type() const { return thorin::as<Tag::Ptr>(Def::type()); }
 const Def* Global::alloced_type() const { return type()->arg(0); }
 
-//------------------------------------------------------------------------------
-
 /*
- * constructors
+ * instantiate templates
  */
 
-Def::Def(node_t node, RebuildFn rebuild, const Def* type, Defs ops, uint64_t fields, const Def* dbg)
-    : type_(type)
-    , rebuild_(rebuild)
-    , debug_(dbg)
-    , fields_(fields)
-    , node_((unsigned)node)
-    , nominal_(false)
-    , order_(0)
-    , gid_(world().next_gid())
-    , num_ops_(ops.size())
-{
-    std::copy(ops.begin(), ops.end(), ops_ptr());
-    hash_ = hash_combine(hash_begin(node), type->gid(), fields_);
-    for (auto op : ops)
-        hash_ = hash_combine(hash_, op->gid());
-}
-
-Def::Def(node_t node, StubFn stub, const Def* type, size_t num_ops, uint64_t fields, const Def* dbg)
-    : type_(type)
-    , stub_(stub)
-    , debug_(dbg)
-    , fields_(fields)
-    , node_(node)
-    , nominal_(true)
-    , order_(0)
-    , gid_(world().next_gid())
-    , num_ops_(num_ops)
-    , hash_(murmur3(gid()))
-{
-    std::fill_n(ops_ptr(), num_ops, nullptr);
-}
-
-Axiom::Axiom(NormalizeFn normalizer, const Def* type, size_t num_ops, u32 tag, u32 flags, const Def* dbg)
-    : Def(Node, stub, type, num_ops, (nat_t(tag) << 32_u64) | nat_t(flags), dbg)
-{
-    u16 currying_depth = 0;
-    while (auto pi = type->isa<Pi>()) {
-        ++currying_depth;
-        type = pi->codomain();
-    }
-
-    normalizer_depth_.set(normalizer, currying_depth);
-}
-
-KindArity::KindArity(World& world)
-    : Def(Node, rebuild, world.kind_multi(), Defs{}, 0, nullptr)
-{}
-
-KindMulti::KindMulti(World& world)
-    : Def(Node, rebuild, world.kind_star() , Defs{}, 0, nullptr)
-{}
-
-KindStar::KindStar(World& world)
-    : Def(Node, rebuild, world.universe(), Defs{}, 0, nullptr)
-{}
-
-Nat::Nat(World& world)
-    : Def(Node, rebuild, world.kind_star(), Defs{}, 0, nullptr)
-{}
-
-Mem::Mem(World& world)
-    : Def(Node, rebuild, world.kind_star(), Defs{}, 0, nullptr)
-{}
-
-const Param* Def::param(Debug dbg) {
-    if (auto lam      = isa<Lam     >()) return world().param(lam->domain(),     lam,      dbg);
-    if (auto pi       = isa<Pi      >()) return world().param(pi ->domain(),     pi,       dbg);
-    if (auto pack     = isa<Pack    >()) return world().param(pack->arity(),     pack,     dbg);
-    if (auto sigma    = isa<Sigma   >()) return world().param(sigma,             sigma,    dbg);
-    if (auto variadic = isa<Variadic>()) return world().param(variadic->arity(), variadic, dbg);
-    if (auto axiom    = isa<Axiom   >()) {
-        if (auto pi = axiom->type()->isa<Pi>())
-            return world().param(pi->domain(), axiom, dbg);
-        return world().param(world().bot_star(), axiom, dbg);
-    }
-    THORIN_UNREACHABLE;
-}
-
-size_t Def::num_params() { return param()->type()->lit_arity(); }
-
-/*
- * rebuild
- */
-
-const Def* Lam        ::rebuild(const Def* d, World& w, const Def* t, Defs o, const Def* dbg) { assert(!d->isa_nominal()); return w.lam(t->as<Pi>(), o[0], o[1], dbg); }
-const Def* Sigma      ::rebuild(const Def* d, World& w, const Def* t, Defs o, const Def* dbg) { assert(!d->isa_nominal()); return w.sigma(t, o, dbg); }
-const Def* Union      ::rebuild(const Def* d, World& w, const Def* t, Defs o, const Def* dbg) { assert(!d->isa_nominal()); return w.union_(t, o, dbg); }
-const Def* Analyze    ::rebuild(const Def* d, World& w, const Def* t, Defs o, const Def* dbg) { return w.analyze(t, o, d->fields(), dbg); }
-const Def* App        ::rebuild(const Def*  , World& w, const Def*  , Defs o, const Def* dbg) { return w.app(o[0], o[1], dbg); }
-const Def* Bot        ::rebuild(const Def*  , World& w, const Def* t, Defs  , const Def* dbg) { return w.bot(t, dbg); }
-const Def* Top        ::rebuild(const Def*  , World& w, const Def* t, Defs  , const Def* dbg) { return w.top(t, dbg); }
-const Def* Extract    ::rebuild(const Def*  , World& w, const Def*  , Defs o, const Def* dbg) { return w.extract(o[0], o[1], dbg); }
-const Def* Global     ::rebuild(const Def* d, World& w, const Def*  , Defs o, const Def* dbg) { return w.global(o[0], o[1], d->as<Global>()->is_mutable(), dbg); }
-const Def* Insert     ::rebuild(const Def*  , World& w, const Def*  , Defs o, const Def* dbg) { return w.insert(o[0], o[1], o[2], dbg); }
-const Def* Match_     ::rebuild(const Def*  , World& w, const Def*  , Defs o, const Def* dbg) { return w.match_(o[0], o.skip_front(), dbg); }
-const Def* KindArity  ::rebuild(const Def*  , World& w, const Def*  , Defs  , const Def*    ) { return w.kind_arity(); }
-const Def* KindMulti  ::rebuild(const Def*  , World& w, const Def*  , Defs  , const Def*    ) { return w.kind_multi(); }
-const Def* KindStar   ::rebuild(const Def*  , World& w, const Def*  , Defs  , const Def*    ) { return w.kind_star(); }
-const Def* Lit        ::rebuild(const Def* d, World& w, const Def* t, Defs  , const Def* dbg) { return w.lit(t, as_lit<nat_t>(d), dbg); }
-const Def* Nat        ::rebuild(const Def*  , World& w, const Def*  , Defs  , const Def*    ) { return w.type_nat(); }
-const Def* Mem        ::rebuild(const Def*  , World& w, const Def*  , Defs  , const Def*    ) { return w.type_mem(); }
-const Def* Pack       ::rebuild(const Def*  , World& w, const Def* t, Defs o, const Def* dbg) { return w.pack(t->arity(), o[0], dbg); }
-const Def* Param      ::rebuild(const Def*  , World& w, const Def* t, Defs o, const Def* dbg) { return w.param(t, o[0]->as_nominal(), dbg); }
-const Def* Pi         ::rebuild(const Def*  , World& w, const Def*  , Defs o, const Def* dbg) { return w.pi(o[0], o[1], dbg); }
-const Def* Tuple      ::rebuild(const Def*  , World& w, const Def* t, Defs o, const Def* dbg) { return w.tuple(t, o, dbg); }
-const Def* Variant_   ::rebuild(const Def*  , World& w, const Def* t, Defs o, const Def* dbg) { return w.variant_(t, o[0], o[1], dbg); }
-const Def* Variadic   ::rebuild(const Def*  , World& w, const Def*  , Defs o, const Def* dbg) { return w.variadic(o[0], o[1], dbg); }
-const Def* Variant    ::rebuild(const Def*  , World& w, const Def* t, Defs o, const Def* dbg) { return w.variant(t->as<VariantType>(), o[0], dbg); }
-const Def* VariantType::rebuild(const Def*  , World& w, const Def*  , Defs o, const Def* dbg) { return w.variant_type(o, dbg); }
-
-/*
- * stub
- */
-
-Def* Universe::stub(const Def*  , World& to, const Def*  , const Def*    ) { return const_cast<Universe*>(to.universe()); }
-Def* Axiom   ::stub(const Def* d, World& to, const Def*  , const Def*    ) { assert(d->isa_nominal()); auto axiom = to.lookup(d->name()); assert(axiom); return axiom; }
-Def* Lam     ::stub(const Def* d, World& to, const Def* t, const Def* dbg) { assert(d->isa_nominal()); return to.lam(t->as<Pi>(), d->as<Lam>()->cc(), d->as<Lam>()->intrinsic(), dbg); }
-Def* Pack    ::stub(const Def* d, World& to, const Def* t, const Def* dbg) { assert(d->isa_nominal()); return to.pack(t, Debug{dbg}); }
-Def* Pi      ::stub(const Def* d, World& to, const Def* t, const Def* dbg) { assert(d->isa_nominal()); return to.pi(t, Debug{dbg}); }
-Def* Sigma   ::stub(const Def* d, World& to, const Def* t, const Def* dbg) { assert(d->isa_nominal()); return to.sigma(t, d->num_ops(), dbg); }
-Def* Union   ::stub(const Def* d, World& to, const Def* t, const Def* dbg) { assert(d->isa_nominal()); return to.union_(t, d->num_ops(), dbg); }
-Def* Variadic::stub(const Def* d, World& to, const Def* t, const Def* dbg) { assert(d->isa_nominal()); return to.variadic(t, Debug{dbg}); }
-
-/*
- * stream
- */
-
-static std::ostream& stream_ops(std::ostream& os, const Def* def) {
-   return stream_list(os, def->ops(), [&](const Def* op) { os << op; }, "(", ")");
-}
-
-std::ostream& Axiom      ::stream(std::ostream& os) const { return streamf(os, "{}", name()); }
-std::ostream& Global     ::stream(std::ostream& os) const { return os << unique_name(); }
-std::ostream& Mem        ::stream(std::ostream& os) const { return streamf(os, "mem"); }
-std::ostream& Nat        ::stream(std::ostream& os) const { return streamf(os, "nat"); }
-std::ostream& Universe   ::stream(std::ostream& os) const { return streamf(os, "□"); }
-std::ostream& Variadic   ::stream(std::ostream& os) const { return streamf(os, "«{}; {}»", arity(), body()); }
-std::ostream& VariantType::stream(std::ostream& os) const { return stream_ops(os << "variant", this); }
-std::ostream& KindArity  ::stream(std::ostream& os) const { return os << "*A"; }
-std::ostream& KindMulti  ::stream(std::ostream& os) const { return os << "*M"; }
-std::ostream& KindStar   ::stream(std::ostream& os) const { return os << "*"; }
-
-std::ostream& Analyze::stream(std::ostream& os) const {
-    stream_list(os << "analyze(", ops().skip_front(), [&](auto def) { os << def; });
-    return streamf(os, "; {})", index());
-}
-
-std::ostream& App::stream(std::ostream& os) const {
-    if (auto w = get_width(this)) {
-        if (auto real = thorin::isa<Tag::Real>(this)) return streamf(os, "r{}", *w);
-        return streamf(os, "i{}", *w);
-    } else if (auto ptr = thorin::isa<Tag::Ptr>(this)) {
-        auto [pointee, addr_space] = ptr->args<2>();
-        os << pointee << '*';
-        if (auto as = isa_lit<nat_t>(addr_space)) {
-            switch (*as) {
-                case AddrSpace::Generic:  return streamf(os, "");
-                case AddrSpace::Global:   return streamf(os, "[Global]");
-                case AddrSpace::Texture:  return streamf(os, "[Tex]");
-                case AddrSpace::Shared:   return streamf(os, "[Shared]");
-                case AddrSpace::Constant: return streamf(os, "[Constant]");
-                default:;
-            }
-        }
-        return streamf(os, "[{}]", addr_space);
-    }
-
-    return streamf(os, "{} {}", callee(), arg());
-}
-
-std::ostream& Lit::stream(std::ostream& os) const {
-    if (type()->isa<KindArity>()) return streamf(os, "{}ₐ", get());
-
-    if (type()->type()->isa<KindArity>()) {
-        if (type()->isa<Top>()) return streamf(os, "{}T", get());
-
-        // append utf-8 subscripts in reverse order
-        std::string s;
-        for (size_t aa = as_lit<nat_t>(type()); aa > 0; aa /= 10)
-            ((s += char(char(0x80) + char(aa % 10))) += char(0x82)) += char(0xe2);
-        std::reverse(s.begin(), s.end());
-
-        return streamf(os, "{}{}", get(), s);
-    } else if (type()->isa<Nat>()) {
-        return streamf(os, "{}_nat", get());
-    } else if (auto int_ = thorin::isa<Tag::Int >(type())) {
-        return streamf(os, "{}_i{}", get(), as_lit<nat_t>(int_->arg()));
-    } else if (auto real = thorin::isa<Tag::Real>(type())) {
-        switch (as_lit<nat_t>(real->arg())) {
-            case 16: return streamf(os, "{}_r16", get<r16>());
-            case 32: return streamf(os, "{}_r32", get<r32>());
-            case 64: return streamf(os, "{}_r64", get<r64>());
-            default: THORIN_UNREACHABLE;
-        }
-    }
-
-    return streamf(os, "{{{}: {}}}", type(), get());
-}
-
-std::ostream& Bot::stream(std::ostream& os) const {
-    return streamf(os, "{{⊥: {}}}", type());
-}
-
-std::ostream& Top::stream(std::ostream& os) const {
-    return streamf(os, "{{⊤: {}}}", type());
-}
-
-#if 0
-std::ostream& Lam::stream(std::ostream& os) const {
-    if (isa_nominal())
-    return streamf(os, "[{}].{}", name(), body());
-}
-#endif
-
-std::ostream& Sigma::stream(std::ostream& os) const {
-    if (isa_nominal()) return os << unique_name();
-    return stream_list(os, ops(), [&](const Def* type) { os << type; }, "[", "]");
-}
-
-std::ostream& Tuple::stream(std::ostream& os) const {
-#if 0
-    // special case for string
-    if (std::all_of(ops().begin(), ops().end(), [&](const Def* op) { return op->isa<Lit>(); })) {
-        if (auto variadic = type()->isa<Variadic>()) {
-            if (auto i = variadic->body()->isa<Sint>()) {
-                if (i->lit_num_bits() == 8) {
-                    for (auto op : ops()) os << as_lit<char>(op);
-                    return os;
-                }
-            }
-        }
-    }
-#endif
-
-    return stream_list(os, ops(), [&](const Def* type) { os << type; }, "(", ")");
-}
-
-std::ostream& Union::stream(std::ostream& os) const {
-    if (isa_nominal()) return os << unique_name();
-    return stream_list(os << "⋃", ops(), [&](const Def* type) { os << type; }, "{", "}");
-}
-
-std::ostream& Pack::stream(std::ostream& os) const {
-#if 0
-    // special case for string
-    if (auto variadic = type()->isa<Variadic>()) {
-        if (auto i = variadic->body()->isa<Sint>()) {
-            if (i->lit_num_bits() == 8) {
-                if (auto a = isa_lit<u64>(arity())) {
-                    if (auto lit = body()->isa<Lit>()) {
-                        for (size_t i = 0, e = *a; i != e; ++i) os << lit->get<char>();
-                        return os;
-                    }
-                }
-            }
-        }
-    }
-#endif
-
-    return streamf(os, "‹{}; {}›", arity(), body());
-}
-
-std::ostream& Pi::stream(std::ostream& os) const {
-    if (is_cn()) {
-        if (auto pi = isa_nominal<Pi>())
-            return streamf(os, "cn {}:{}", pi->param(), pi->domain());
-        else
-            return streamf(os, "cn {}", domain());
-    } else {
-        if (auto pi = isa_nominal<Pi>())
-            return streamf(os, "Π{}:{} -> {}", pi->param(), pi->domain(), pi->codomain());
-        else
-            return streamf(os, "Π{} -> {}", domain(), codomain());
-    }
-}
-
-std::ostream& Def::stream(std::ostream& out) const { return out << unique_name(); }
-
-std::ostream& Def::stream_assignment(std::ostream& os) const {
-    return streamf(os, "{}: {} = {} {}", unique_name(), type(), node_name(), stream_list(ops(), [&] (const Def* def) { os << def; })) << endl;
-}
-std::ostream& Lam::stream_head(std::ostream& os) const {
-    auto lam = as_nominal<Lam>();
-    if (type()->is_cn())
-        streamf(os, "cn {} {}: {} @({})", lam->unique_name(), lam->param(), lam->param()->type(), lam->filter());
-    else
-        streamf(os, "fn {} {}: {} -> {} @({})", lam->unique_name(), lam->param(), lam->param()->type(), lam->codomain(), lam->filter());
-    if (is_external()) os << " extern";
-    if (cc() == CC::Device) os << " device";
-    return os;
-}
-
-std::ostream& Lam::stream_body(std::ostream& os) const {
-    return streamf(os, "{}", body());
-}
-
-void Lam::dump_head() const { stream_head(std::cout) << endl; }
-void Lam::dump_body() const { stream_body(std::cout) << endl; }
+template const Def*     TExt  <false>::rebuild(World&, const Def*, Defs, const Def*) const;
+template const Def*     TExt  <true >::rebuild(World&, const Def*, Defs, const Def*) const;
+template const Def*     TBound<false>::rebuild(World&, const Def*, Defs, const Def*) const;
+template const Def*     TBound<true >::rebuild(World&, const Def*, Defs, const Def*) const;
+template TBound<false>* TBound<false>::stub(World&, const Def*, const Def*);
+template TBound<true >* TBound<true >::stub(World&, const Def*, const Def*);
 
 }

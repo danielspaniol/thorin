@@ -29,7 +29,6 @@
 #include <rv/passes.h>
 #include <rv/region/FunctionRegion.h>
 
-#include "thorin/util/log.h"
 #include "thorin/world.h"
 #include "thorin/analyses/scope.h"
 
@@ -46,31 +45,30 @@ struct VectorizeArgs {
 };
 
 Lam* CodeGen::emit_vectorize_lam(Lam* lam) {
-    auto target = lam->app()->callee()->as_nominal<Lam>();
-    assert_unused(target->intrinsic() == Lam::Intrinsic::Vectorize);
-    assert(lam->app()->num_args() >= VectorizeArgs::Num && "required arguments are missing");
+    //auto target = lam->body()->as<App>()->callee()->as_nom<Lam>();
+    assert(lam->body()->as<App>()->num_args() >= VectorizeArgs::Num && "required arguments are missing");
 
     // arguments
-    auto kernel = lam->app()->arg(VectorizeArgs::Body)->as<Global>()->init()->as_nominal<Lam>();
-    const size_t num_kernel_args = lam->app()->num_args() - VectorizeArgs::Num;
+    auto kernel = lam->body()->as<App>()->arg(VectorizeArgs::Body)->as<Global>()->init()->as_nom<Lam>();
+    const size_t num_kernel_args = lam->body()->as<App>()->num_args() - VectorizeArgs::Num;
 
     // build simd-function signature
     Array<llvm::Type*> simd_args(num_kernel_args + 1);
     simd_args[0] = irbuilder_.getInt32Ty(); // loop index
     for (size_t i = 0; i < num_kernel_args; ++i) {
-        auto type = lam->app()->arg(i + VectorizeArgs::Num)->type();
+        auto type = lam->body()->as<App>()->arg(i + VectorizeArgs::Num)->type();
         simd_args[i + 1] = convert(type);
     }
 
     auto simd_type = llvm::FunctionType::get(irbuilder_.getVoidTy(), llvm_ref(simd_args), false);
-    auto kernel_simd_func = (llvm::Function*)module_->getOrInsertFunction(kernel->unique_name() + "_vectorize", simd_type);
+    auto kernel_simd_func = (llvm::Function*)module_->getOrInsertFunction(kernel->unique_name() + "_vectorize", simd_type).getCallee()->stripPointerCasts();
 
     // build iteration loop and wire the calls
     Array<llvm::Value*> args(num_kernel_args + 1);
     args[0] = irbuilder_.getInt32(0);
     for (size_t i = 0; i < num_kernel_args; ++i) {
         // check target type
-        auto arg = lam->app()->arg(i + VectorizeArgs::Num);
+        auto arg = lam->body()->as<App>()->arg(i + VectorizeArgs::Num);
         auto llvm_arg = lookup(arg);
         if (isa<Tag::Ptr>(arg->type()))
             llvm_arg = irbuilder_.CreateBitCast(llvm_arg, simd_args[i + 1]);
@@ -78,12 +76,12 @@ Lam* CodeGen::emit_vectorize_lam(Lam* lam) {
     }
     auto simd_kernel_call = irbuilder_.CreateCall(kernel_simd_func, llvm_ref(args));
 
-    if (!lam->app()->arg(VectorizeArgs::Length)->isa<Lit>())
-        EDEF(lam->app()->arg(VectorizeArgs::Length), "vector length must be known at compile-time");
-    u32 vector_length_constant = as_lit<u32>(lam->app()->arg(VectorizeArgs::Length));
+    if (!lam->body()->as<App>()->arg(VectorizeArgs::Length)->isa<Lit>())
+        world().edef(lam->body()->as<App>()->arg(VectorizeArgs::Length), "vector length must be known at compile-time");
+    u32 vector_length_constant = as_lit<u32>(lam->body()->as<App>()->arg(VectorizeArgs::Length));
     vec_todo_.emplace_back(vector_length_constant, emit_function_decl(kernel), simd_kernel_call);
 
-    return lam->app()->arg(VectorizeArgs::Return)->as_nominal<Lam>();
+    return lam->body()->as<App>()->arg(VectorizeArgs::Return)->as_nom<Lam>();
 }
 
 void CodeGen::emit_vectorize(u32 vector_length, llvm::Function* kernel_func, llvm::CallInst* simd_kernel_call) {
@@ -143,7 +141,7 @@ void CodeGen::emit_vectorize(u32 vector_length, llvm::Function* kernel_func, llv
     llvm::TargetIRAnalysis ir_analysis;
     llvm::TargetTransformInfo tti = ir_analysis.run(*kernel_func, FAM);
     llvm::TargetLibraryAnalysis lib_analysis;
-    llvm::TargetLibraryInfo tli = lib_analysis.run(*kernel_func->getParent(), MAM);
+    llvm::TargetLibraryInfo tli = lib_analysis.run(*kernel_func, FAM);
     rv::PlatformInfo platform_info(*module_.get(), &tti, &tli);
 
     if (vector_length == 1) {
@@ -186,13 +184,12 @@ void CodeGen::emit_vectorize(u32 vector_length, llvm::Function* kernel_func, llv
         LoopExitCanonicalizer canonicalizer(loop_info);
         canonicalizer.canonicalize(*kernel_func);
 
-        vectorizer.analyze(vec_info, dom_tree, pdom_tree, loop_info);
+        vectorizer.analyze(vec_info, FAM);
 
-        bool lin_ok = vectorizer.linearize(vec_info, dom_tree, pdom_tree, loop_info);
+        bool lin_ok = vectorizer.linearize(vec_info, FAM);
         assert_unused(lin_ok);
 
-        llvm::DominatorTree new_dom_tree(*vec_info.getMapping().scalarFn); // Control conversion does not preserve the dominance tree
-        bool vectorize_ok = vectorizer.vectorize(vec_info, new_dom_tree, loop_info, SE, MD, nullptr);
+        bool vectorize_ok = vectorizer.vectorize(vec_info, FAM, nullptr);
         assert_unused(vectorize_ok);
 
         vectorizer.finalize();

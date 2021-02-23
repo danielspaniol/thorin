@@ -1,15 +1,11 @@
 #include "thorin/config.h"
-#include "thorin/util.h"
 #include "thorin/world.h"
 #include "thorin/rewrite.h"
 #include "thorin/analyses/cfg.h"
 #include "thorin/analyses/domtree.h"
 #include "thorin/analyses/scope.h"
-#include "thorin/analyses/verify.h"
 #include "thorin/transform/mangle.h"
-#include "thorin/transform/resolve_loads.h"
 #include "thorin/transform/partial_evaluation.h"
-#include "thorin/util/log.h"
 
 namespace thorin {
 
@@ -21,9 +17,8 @@ public:
 
     World& world() { return world_; }
     void run();
-    void eliminate_tail_rec();
     void eta_conversion();
-    void eliminate_params();
+    void eliminate_vars();
     void verify_closedness();
     void within(const Def*);
     void clean_pe_infos();
@@ -34,73 +29,10 @@ private:
     bool todo_ = true;
 };
 
-void Cleaner::eliminate_tail_rec() {
-    world_.visit([&](const Scope& scope) {
-        auto entry = scope.entry()->isa<Lam>();
-        if (entry == nullptr) return;
-
-        bool only_tail_calls = true;
-        bool recursive = false;
-        for (auto use : entry->uses()) {
-            if (use->isa<Param>()) continue;
-            if (scope.contains(use)) {
-                if (use.index() != 0 || !use->isa<App>()) {
-                    only_tail_calls = false;
-                    break;
-                } else {
-                    recursive = true;
-                }
-            }
-        }
-
-        if (recursive && only_tail_calls) {
-            auto n = entry->num_params();
-            Array<const Def*> args(n);
-
-            for (size_t i = 0; i != n; ++i) {
-                args[i] = entry->param(i);
-
-                for (auto use : entry->uses()) {
-                    if (use->isa<Param>()) continue;
-                    if (scope.contains(use)) {
-                        auto arg = use->as<App>()->arg(i);
-                        if (!arg->isa<Bot>() && arg != args[i]) {
-                            args[i] = world().top(arg->type());
-                            break;
-                        }
-                    }
-                }
-            }
-
-            std::vector<const Def*> new_args;
-
-            for (size_t i = 0; i != n; ++i) {
-                if (args[i]->isa<Top>()) {
-                    new_args.emplace_back(entry->param(i));
-                    if (entry->param(i)->type()->order() != 0) {
-                        // the resulting function wouldn't be of first order so examine next scope
-                        return;
-                    }
-                }
-            }
-
-            if (new_args.size() != n) {
-                DLOG("tail recursive: {}", entry);
-                auto dropped = drop(scope, args);
-
-                entry->app(dropped, new_args);
-                todo_ = true;
-                const_cast<Scope&>(scope).update();
-                // this pass will be rewritten, so don't mind the const_cast for now
-            }
-        }
-    });
-}
-
 // TODO remove
-bool is_param(const Def* def) {
-    if (def->isa<Param>()) return true;
-    if (auto extract = def->isa<Extract>()) return extract->agg()->isa<Param>();
+bool is_var(const Def* def) {
+    if (def->isa<Var>()) return true;
+    if (auto extract = def->isa<Extract>()) return extract->tuple()->isa<Var>();
     return false;
 }
 
@@ -113,17 +45,17 @@ void Cleaner::eta_conversion() {
 
             // eat calls to known lams that are only used once
             while (true) {
-                if (auto app = lam->app()) {
-                    if (auto callee = app->callee()->isa_nominal<Lam>()) {
+                if (auto app = lam->body()->isa<App>()) {
+                    if (auto callee = app->callee()->isa_nom<Lam>()) {
                         if (!callee->is_set() || callee->is_external() || callee->num_uses() > 2) break;
                         bool ok = true;
                         for (auto use : callee->uses()) { // 2 iterations at max - see above
-                            if (!use->isa<App>() && !use->isa<Param>())
+                            if (!use->isa<App>() && !use->isa<Var>())
                                 ok = false;
                         }
                         if (!ok) break;
 
-                        callee->param()->replace(app->arg());
+                        callee->var()->replace(app->arg());
                         lam->set_body(callee->body());
                         callee->unset();
                         todo_ = todo = true;
@@ -133,17 +65,17 @@ void Cleaner::eta_conversion() {
                 break;
             }
 
-            auto app = lam->app();
+            auto app = lam->body()->isa<App>();
             if (!app) continue;
 
-            // try to subsume lams which call a parameter
-            // (that is free within that lam) with that parameter
+            // try to subsume lams which call a var
+            // (that is free within that lam) with that var
             auto callee = app->callee();
-            if (is_param(callee)) {
-                if (get_param_lam(callee) == lam || lam->is_external())
+            if (is_var(callee)) {
+                if (get_var_lam(callee) == lam || lam->is_external())
                     continue;
 
-                if (app->arg() == lam->param()) {
+                if (app->arg() == lam->var()) {
                     lam->replace(callee);
                     lam->unset();
                     todo_ = todo = true;
@@ -154,22 +86,22 @@ void Cleaner::eta_conversion() {
                 // build the permutation of the arguments
                 Array<size_t> perm(app->num_args());
                 bool is_permutation = true;
-                auto params = lam->params();
+                auto vars = lam->vars();
                 for (size_t i = 0, e = app->num_args(); i != e; ++i)  {
-                    auto param_it = std::find(params.begin(), params.end(), app->arg(i));
+                    auto var_it = std::find(vars.begin(), vars.end(), app->arg(i));
 
-                    if (param_it == params.end()) {
+                    if (var_it == vars.end()) {
                         is_permutation = false;
                         break;
                     }
 
-                    perm[i] = param_it - params.begin();
+                    perm[i] = var_it - vars.begin();
                 }
 
                 if (!is_permutation) continue;
 
                 // for every use of the lam at an pp,
-                // permute the arguments and call the parameter instead
+                // permute the arguments and call the var instead
                 for (auto use : lam->copy_uses()) {
                     auto uapp = use->isa<App>();
                     if (uapp && use.index() == 0) {
@@ -187,66 +119,66 @@ void Cleaner::eta_conversion() {
     }
 }
 
-void Cleaner::eliminate_params() {
+void Cleaner::eliminate_vars() {
     for (auto old_lam : world().copy_lams()) {
         if (!old_lam->is_set()) continue;
 
-        std::vector<size_t> proxy_idx; // indices of params we eliminate
-        std::vector<size_t> param_idx; // indices of params we keep
+        std::vector<size_t> proxy_idx; // indices of vars we eliminate
+        std::vector<size_t> var_idx; // indices of vars we keep
 
-        auto old_app = old_lam->app();
+        auto old_app = old_lam->body()->isa<App>();
         if (old_app == nullptr || world().is_external(old_lam)) continue;
 
         for (auto use : old_lam->uses()) {
-            if (use->isa<Param>()) continue; // ignore old_lam's Param
+            if (use->isa<Var>()) continue; // ignore old_lam's Var
             if (use.index() != 0 || !use->isa<App>())
                 goto next_lam;
         }
 
-        // maybe the whole param tuple is passed somewhere?
-        if (old_lam->num_params() != 1) {
-            for (auto use : old_lam->param()->uses()) {
+        // maybe the whole var tuple is passed somewhere?
+        if (old_lam->num_vars() != 1) {
+            for (auto use : old_lam->var()->uses()) {
                 if (!use->isa<Extract>())
                     goto next_lam;
             }
         }
 
-        for (size_t i = 0, e = old_lam->num_params(); i != e; ++i) {
-            auto param = old_lam->param(i);
-            if (param->num_uses() == 0)
+        for (size_t i = 0, e = old_lam->num_vars(); i != e; ++i) {
+            auto var = old_lam->var(i);
+            if (var->num_uses() == 0)
                 proxy_idx.push_back(i);
             else
-                param_idx.push_back(i);
+                var_idx.push_back(i);
         }
 
         if (!proxy_idx.empty()) {
-            auto old_domain = old_lam->type()->domain();
+            auto old_dom = old_lam->type()->dom();
 
-            const Def* new_domain;
-            if (auto sigma = old_domain->isa<Sigma>())
-                new_domain = world().sigma(sigma->ops().cut(proxy_idx));
+            const Def* new_dom;
+            if (auto sigma = old_dom->isa<Sigma>())
+                new_dom = world().sigma(sigma->ops().cut(proxy_idx));
             else {
                 assert(proxy_idx.size() == 1 && proxy_idx[0] == 0);
-                new_domain = world().sigma();
+                new_dom = world().sigma();
             }
 
-            auto cn = world().cn(new_domain);
-            auto new_lam = world().lam(cn, old_lam->cc(), old_lam->intrinsic(), old_lam->debug_history());
+            auto cn = world().cn(new_dom);
+            auto new_lam = world().nom_lam(cn, old_lam->cc(), old_lam->debug_history());
             size_t j = 0;
-            for (auto i : param_idx) {
-                old_lam->param(i)->replace(new_lam->param(j));
-                new_lam->param(j++, old_lam->param(i)->debug_history());
+            for (auto i : var_idx) {
+                old_lam->var(i)->replace(new_lam->var(j));
+                new_lam->var(j++, old_lam->var(i)->debug_history());
             }
 
             new_lam->set_filter(old_lam->filter());
-            new_lam->app(old_app->callee(), old_app->args(), old_app->debug());
+            new_lam->app(old_app->callee(), old_app->args(), old_app->dbg());
             old_lam->unset();
 
             for (auto use : old_lam->copy_uses()) {
-                if (use->isa<Param>()) continue; // ignore old_lam's Param
+                if (use->isa<Var>()) continue; // ignore old_lam's Var
                 auto use_app = use->as<App>();
                 assert(use.index() == 0);
-                use_app->replace(world().app(new_lam, use_app->args().cut(proxy_idx), use_app->debug()));
+                use_app->replace(world().app(new_lam, use_app->args().cut(proxy_idx), use_app->dbg()));
             }
 
             todo_ = true;
@@ -259,15 +191,14 @@ void Cleaner::verify_closedness() {
     for (auto def : world().defs()) {
         if (!def->is_set()) continue;
 
-        size_t i = 0;
-        for (auto op : def->ops()) {
-            within(op);
-            assert_unused(op->uses_.contains(Use(def, i++)) && "can't find def in op's uses");
+        for (size_t i = 0, e = def->num_ops(); i != e; ++i) {
+            within(def->op(i));
+            assert((def->op(i)->is_const() || def->op(i)->uses_.contains(Use(def, i))) && "can't find def in op's uses");
         }
 
         for (const auto& use : def->uses_) {
             within(use);
-            assert(use->op(use.index()) == def && "use doesn't point to def");
+            assert((use.is_used_as_type() || use->op(use.index()) == def) && "use doesn't point to def");
         }
     }
 }
@@ -278,37 +209,35 @@ void Cleaner::within(const Def* def) {
 }
 
 void Cleaner::clean_pe_infos() {
+#if 0
     world().rewrite("cleaning remaining pe_infos",
         [&](const Scope& scope) {
             return scope.entry()->isa<Lam>();
         },
         [&](const Def* old_def) -> const Def* {
             if (auto app = old_def->isa<App>()) {
-                if (auto callee = app->callee()->isa_nominal<Lam>()) {
+                if (auto callee = app->callee()->isa_nom<Lam>()) {
                     if (callee->intrinsic() == Lam::Intrinsic::PeInfo) {
                         auto next = app->arg(3);
-                        assert(!is_const(app->arg(2)));
-                        IDEF(app->callee(), "pe_info not constant: {}: {}", "TODO", app->arg(2));
+                        assert(app->arg(2)->is_const());
+                        world().idef(app->callee(), "pe_info not constant: {}: {}", "TODO", app->arg(2));
                         return world().app(next, {app->arg(0)}, app->debug());
                     }
                 }
             }
             return nullptr;
         });
+#endif
 }
 
 void Cleaner::cleanup_fix_point() {
     int i = 0;
     for (; todo_; ++i) {
-        VLOG("iteration: {}", i);
+        world().VLOG("iteration: {}", i);
         todo_ = false;
-        if (world_.is_pe_done())
-            eliminate_tail_rec();
         eta_conversion();
-        eliminate_params();
+        eliminate_vars();
         cleanup(world_); // resolve replaced defs before going to resolve_loads
-        todo_ |= resolve_loads(world());
-        cleanup(world_);
         if (!world().is_pe_done())
             todo_ |= partial_evaluation(world_);
         else
@@ -317,7 +246,7 @@ void Cleaner::cleanup_fix_point() {
 }
 
 void Cleaner::run() {
-    VLOG("start cleanup");
+    world().VLOG("start cleanup");
     cleanup_fix_point();
 
     if (!world().is_pe_done()) {
@@ -328,10 +257,9 @@ void Cleaner::run() {
         cleanup_fix_point();
     }
 
-    VLOG("end cleanup");
+    world().VLOG("end cleanup");
 #if THORIN_ENABLE_CHECKS
     verify_closedness();
-    debug_verify(world());
 #endif
 }
 

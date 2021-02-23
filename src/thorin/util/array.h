@@ -6,13 +6,10 @@
 #include <cstddef>
 #include <cstring>
 #include <initializer_list>
-#include <iostream>
 #include <iterator>
 #include <functional>
 #include <vector>
 #include <type_traits>
-
-#include "thorin/util/stream.h"
 
 namespace thorin {
 
@@ -23,7 +20,7 @@ class Array;
 
 /**
  * A container-like wrapper for an array.
- * The array may either stem from a C array, a <tt>std::vector</tt>, a <tt>std::initializer_list</tt>, an @p Array or another @p ArrayRef.
+ * The array may either stem from a C array, a <code>std::vector</code>, a <code>std::initializer_list</code>, an @p Array or another @p ArrayRef.
  * @p ArrayRef does <em>not</em> own the data and, thus, does not destroy any data.
  * Likewise, you must be carefull to not destroy data an @p ArrayRef is pointing to.
  * Thorin makes use of @p ArrayRef%s in many places.
@@ -65,12 +62,17 @@ public:
     {}
     ArrayRef(std::initializer_list<T> list)
         : size_(std::distance(list.begin(), list.end()))
-        , ptr_(list.begin())
+        , ptr_(std::begin(list))
     {}
     ArrayRef(const std::vector<T>& vector)
        : size_(vector.size())
        , ptr_(vector.data())
     {}
+    ArrayRef(ArrayRef&& array)
+        : ArrayRef()
+    {
+        swap(*this, array);
+    }
 
     const_iterator begin() const { return ptr_; }
     const_iterator end() const { return ptr_ + size_; }
@@ -88,20 +90,23 @@ public:
     Array<T> cut(ArrayRef<size_t> indices, size_t reserve = 0) const;
     template<class Other>
     bool operator==(const Other& other) const { return this->size() == other.size() && std::equal(begin(), end(), other.begin()); }
-    void dump() const { stream(std::cout) << "\n"; }
-    std::ostream& stream(std::ostream& os) const {
-        return stream_list(os, *this, [&] (const auto& elem) { os << elem; }, "{", "}");
+    ArrayRef& operator=(ArrayRef other) { swap(*this, other); return *this; }
+    template<size_t N> std::array<T, N> to_array() const {
+        assert(size() == N);
+        std::array<T, N> result;
+        std::copy(begin(), end(), result.begin());
+        return result;
     }
 
+    friend void swap(ArrayRef<T>& a1, ArrayRef<T>& a2) {
+        using std::swap;
+        swap(a1.size_, a2.size_);
+        swap(a1.ptr_,  a2.ptr_ );
+    }
 private:
     size_t size_;
     const T* ptr_;
 };
-
-template<class T>
-std::ostream& operator<<(std::ostream& os, const ArrayRef<T> a) {
-    return a.stream(os);
-}
 
 //------------------------------------------------------------------------------
 
@@ -194,7 +199,7 @@ private:
 
 /**
  * A container for an array, either heap-allocated or stack allocated.
- * This class is similar to <tt>std::vector</tt> with the following differences:
+ * This class is similar to <code>std::vector</code> with the following differences:
  *  - If the size is small enough, the array resides on the stack.
  *  - In contrast to std::vector, @p Array cannot grow dynamically.
  *    A @p Array may @p shrink, however.
@@ -287,7 +292,7 @@ public:
     T const& operator[](size_t i) const { assert(i < size() && "index out of bounds"); return data()[i]; }
     bool operator==(const Array other) const { return ArrayRef<T>(*this) == ArrayRef<T>(other); }
     Array& operator=(Array other) { swap(*this, other); return *this; }
-    void dump() const { ref().dump(); }
+    template<size_t N> std::array<T, N> to_array() const { return ref().template to_array<N>(); }
 
     friend void swap(Array& a, Array& b) {
         swap(a.storage_, b.storage_);
@@ -341,11 +346,6 @@ auto concat(ArrayRef<T> a, const T& val) -> Array<T> {
 template<class T>
 Array<typename T::value_type> make_array(const T& container) {
     return Array<typename T::value_type>(container.begin(), container.end());
-}
-
-template<class T>
-std::ostream& operator<<(std::ostream& os, const Array<T>& a) {
-    return os << ArrayRef<T>(a);
 }
 
 }

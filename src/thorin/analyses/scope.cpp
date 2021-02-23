@@ -1,10 +1,8 @@
 #include "thorin/analyses/scope.h"
 
 #include <algorithm>
-#include <fstream>
 
 #include "thorin/rewrite.h"
-#include "thorin/util/log.h"
 #include "thorin/world.h"
 #include "thorin/analyses/cfg.h"
 #include "thorin/analyses/domtree.h"
@@ -16,83 +14,94 @@ namespace thorin {
 Scope::Scope(Def* entry)
     : world_(entry->world())
     , entry_(entry)
-    , exit_(world().axiom_end())
+    , exit_(world().nom_lam(world().cn(world().bot_kind()), world_.dbg("exit")))
 {
     run();
 }
 
 Scope::~Scope() {}
 
-Scope& Scope::update() {
-    defs_.clear();
-    free_        = nullptr;
-    free_params_ = nullptr;
-    cfa_         = nullptr;
-    run();
-    return *this;
-}
-
 void Scope::run() {
-    unique_queue<DefSet&> queue(defs_);
-    queue.push(entry_->param());
+    unique_queue<DefSet&> queue(bound_);
+    queue.push(entry_->var());
 
     while (!queue.empty()) {
         for (auto use : queue.pop()->uses()) {
-            if (use == entry_ || use == exit_) continue;
-            queue.push(use);
+            if (use != entry_ && use != exit_) queue.push(use);
         }
     }
 }
 
-const DefSet& Scope::free() const {
-    if (!free_) {
-        free_ = std::make_unique<DefSet>();
+void Scope::calc_bound() const {
+    if (has_bound_) return;
+    has_bound_ = true;
 
-        for (auto def : defs_) {
-            if (!def->is_set()) continue;
+    DefSet live;
+    unique_queue<DefSet&> queue(live);
 
-            for (auto op : def->ops()) {
-                if (!contains(op))
-                    free_->emplace(op);
-            }
-        }
+    auto enqueue = [&](const Def* def) {
+        if (def->is_const()) return;
+
+        if (bound_.contains(def))
+            queue.push(def);
+        else
+            free_defs_.emplace(def);
+    };
+
+    for (auto op : entry()->extended_ops())
+        enqueue(op);
+
+    while (!queue.empty()) {
+        for (auto op : queue.pop()->extended_ops())
+            enqueue(op);
     }
 
-    return *free_;
+    swap(live, bound_);
 }
 
-const ParamSet& Scope::free_params() const {
-    if (!free_) {
-        free_params_ = std::make_unique<ParamSet>();
-        unique_queue<DefSet> queue;
+void Scope::calc_free() const {
+    if (has_free_) return;
+    has_free_ = true;
 
-        auto enqueue = [&](const Def* def) {
-            if (auto param = def->isa<Param>())
-                free_params_->emplace(param);
-            else if (def->isa_nominal())
-                return;
-            else
-                queue.push(def);
-        };
+    unique_queue<DefSet> queue;
 
-        for (auto def : free())
-            enqueue(def);
+    auto enqueue = [&](const Def* def) {
+        if (def->is_const()) return;
 
-        while (!queue.empty()) {
-            for (auto op : queue.pop()->ops())
-                enqueue(op);
-        }
+        if (auto var = def->isa<Var>())
+            free_vars_.emplace(var);
+        else if (auto nom = def->isa_nom())
+            free_noms_.emplace(nom);
+        else
+            queue.push(def);
+    };
+
+    for (auto free : free_defs())
+        enqueue(free);
+
+    while (!queue.empty()) {
+        for (auto op : queue.pop()->extended_ops())
+            enqueue(op);
     }
-
-    return *free_params_;
 }
 
 const CFA& Scope::cfa() const { return lazy_init(this, cfa_); }
 const F_CFG& Scope::f_cfg() const { return cfa().f_cfg(); }
 const B_CFG& Scope::b_cfg() const { return cfa().b_cfg(); }
 
-std::ostream& Scope::stream(std::ostream& os) const { return schedule(*this).stream(os); }
-void Scope::write_thorin(const char* filename) const { return schedule(*this).write_thorin(filename); }
-void Scope::thorin() const { schedule(*this).thorin(); }
+Stream& Scope::stream(Stream& s) const { return schedule(*this).stream(s); }
+
+template void Streamable<Scope>::dump() const;
+template void Streamable<Scope>::write() const;
+
+bool is_free(const Var* var, const Def* def) {
+    // optimize common cases
+    if (def == var) return true;
+    for (auto p : var->nom()->vars())
+        if (p == var) return true;
+
+    Scope scope(var->nom());
+    return scope.bound(def);
+}
 
 }

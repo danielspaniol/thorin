@@ -1,110 +1,162 @@
 #include "thorin/pass/pass.h"
 
 #include "thorin/rewrite.h"
-#include "thorin/util/log.h"
 
 namespace thorin {
 
+RWPass::RWPass(PassMan& man, const std::string& name)
+    : man_(man)
+    , name_(name)
+    , proxy_id_(man.passes().size())
+{}
+
+FPPassBase::FPPassBase(PassMan& man, const std::string& name)
+    : RWPass(man, name)
+    , index_(man.fp_passes().size())
+{}
+
+undo_t FPPassBase::analyze() {
+    undo_t undo = No_Undo;
+    for (auto op : man().cur_nom()->extended_ops())
+        undo = std::min(undo, analyze(op));
+    return undo;
+}
+
+void PassMan::init_state() {
+    auto num = fp_passes_.size();
+    states_.emplace_back(num);
+
+    for (size_t i = 0; i != num; ++i)
+        cur_state().data[i] = fp_passes_[i]->alloc();
+}
+
+void PassMan::push_state() {
+    if (!fp_passes_.empty()) {
+        init_state();
+        auto&& prev_state   = states_[states_.size() - 2];
+        cur_state().stack   = prev_state.stack; // copy over stack
+        cur_state().cur_nom = prev_state.stack.top();
+        cur_state().old_ops = cur_state().cur_nom->ops();
+    }
+}
+
+void PassMan::pop_states(size_t undo) {
+    while (states_.size() != undo) {
+        for (size_t i = 0, e = cur_state().data.size(); i != e; ++i)
+            fp_passes_[i]->dealloc(cur_state().data[i]);
+
+        if (undo != 0) // only reset if not final cleanup
+            cur_state().cur_nom->set(cur_state().old_ops);
+
+        states_.pop_back();
+    }
+}
+
 void PassMan::run() {
-    states_.emplace_back(passes_);
-    std::vector<const Def*> new_ops;
+    world().ILOG("run");
+    init_state();
 
-    auto externals = world().externals(); // copy
-    for (const auto& [name, nom] : externals) {
-        cur_nominal_ = nom;
-        rewrite(nom); // provokes inspect
-        analyze(nom); // puts into the queue
-        cur_nominal_ = nullptr; // ensure to provoke pass->enter
+    for (auto pass : passes_)
+        world().ILOG(" + {}", pass->name());
+    world().debug_stream();
 
-        while (!queue().empty()) {
-            auto old_nom = cur_nominal_;
-            cur_nominal_ = std::get<Def*>(queue().top());
+    auto externals = std::vector(world().externals().begin(), world().externals().end());
+    for (const auto& [_, nom] : externals)
+        enqueue(rewrite(nom));
 
-            if (old_nom != cur_nominal_) {
-                new_state();
-                for (auto& pass : passes_)
-                    pass->enter(cur_nominal_);
-            }
+    while (!cur_state().stack.empty()) {
+        push_state();
+        cur_nom_ = pop(cur_state().stack);
+        world().VLOG("=== state/cur_nom {}/{} ===", states_.size() - 1, cur_nom());
 
-            outf("\ncur: {} {}\n", cur_state_id(), cur_nominal());
+        if (!cur_nom()->is_set()) continue;
 
-            bool mismatch = false;
-            if (cur_nominal_->is_set()) {
-                new_ops.resize(cur_nominal()->num_ops());
-                for (size_t i = 0, e = cur_nominal()->num_ops(); i != e; ++i) {
-                    auto new_op = rewrite(cur_nominal()->op(i));
-                    mismatch |= new_op != cur_nominal()->op(i);
-                    new_ops[i] = new_op;
-                }
-            }
+        for (auto pass : passes_)
+            pass->enter();
 
-            if (mismatch) {
-                assert(undo_ == No_Undo && "only provoke undos during analyze");
-                cur_nominal()->set(new_ops);
-                continue;
-            }
+        for (size_t i = 0, e = cur_nom()->num_ops(); i != e; ++i)
+            cur_nom()->set(i, rewrite(cur_nom()->op(i)));
 
-            queue().pop();
+        for (auto pass : passes_)
+            pass->finish();
 
-            if (cur_nominal_->is_set()) {
-                for (auto op : cur_nominal()->ops())
-                    analyze(op);
-            }
+        undo_t undo = No_Undo;
+        for (auto&& pass : fp_passes_)
+            undo = std::min(undo, pass->analyze());
 
-            if (undo_ != No_Undo) {
-                outf("undo: {} -> {}\n", cur_state_id(), undo_);
-
-                for (size_t i = cur_state_id(); i-- != undo_;) {
-                    if (states_[i].nominal->is_set())
-                        states_[i].nominal->set(states_[i].old_ops);
-                }
-
-                states_.resize(undo_);
-                undo_ = No_Undo;
-                cur_nominal_ = std::get<Def*>(queue().top()); // don't provoke pass->enter
-            }
+        if (undo == No_Undo) {
+            for (auto op : cur_nom()->extended_ops())
+                enqueue(op);
+            world().DLOG("=== done ===");
+        } else {
+            pop_states(undo);
+            world().DLOG("=== undo: {} -> {} ===", undo, cur_state().stack.top());
         }
     }
 
-    cleanup(world_);
+    world().ILOG("finished");
+    pop_states(0);
+
+    world().debug_stream();
+    cleanup(world());
 }
 
 const Def* PassMan::rewrite(const Def* old_def) {
-    if (auto new_def = lookup(old_def)) return *new_def;
+    if (old_def->is_const()) return old_def;
 
-    if (auto nominal = old_def->isa_nominal()) {
-        for (auto& pass : passes_)
-            pass->inspect(nominal);
-        return map(nominal, nominal);
+    if (auto new_def = lookup(old_def)) {
+        if (old_def == *new_def)
+            return old_def;
+        else
+            return map(old_def, rewrite(*new_def));
     }
 
-    auto new_type  = rewrite(old_def->type());
+    auto new_type = rewrite(old_def->type());
+    auto new_dbg  = old_def->dbg() ? rewrite(old_def->dbg()) : nullptr;
 
-    bool changed = false;
-    Array<const Def*> new_ops(old_def->num_ops(), [&](auto i) {
-        auto new_op = rewrite(old_def->op(i));
-        changed |= old_def->op(i) != new_op;
-        return new_op;
-    });
+    // rewrite nom
+    if (auto old_nom = old_def->isa_nom()) {
+        for (auto pass : passes_) {
+            if (auto rw = pass->rewrite(old_nom, new_type, new_dbg); rw != old_nom)
+                return map(old_nom, rewrite(rw));
+        }
 
-    auto new_def = changed ? old_def->rebuild(world(), new_type, new_ops, old_def->debug()) : old_def;
+        assert(old_nom->type() == new_type);
+        return map(old_nom, old_nom);
+    }
 
-    for (auto& pass : passes_)
-        new_def = pass->rewrite(new_def);
+    Array<const Def*> new_ops(old_def->num_ops(), [&](size_t i) { return rewrite(old_def->op(i)); });
 
-    assert(!cur_state().old2new.contains(new_def) || cur_state().old2new[new_def] == new_def);
-    return map(old_def, map(new_def, new_def));
+    // rewrite structural before rebuild
+    for (auto pass : passes_) {
+        if (auto rw = pass->rewrite(old_def, new_type, new_ops, new_dbg); rw != old_def)
+            return map(old_def, rewrite(rw));
+    }
+
+    auto new_def = old_def->rebuild(world(), new_type, new_ops, new_dbg);
+
+    // rewrite structural after rebuild
+    for (auto pass : passes_) {
+        if (auto rw = pass->rewrite(new_def); rw != new_def)
+            return map(old_def, rewrite(rw));
+    }
+
+    return map(old_def, new_def);
 }
 
-void PassMan::analyze(const Def* def) {
-    if (!cur_state().analyzed.emplace(def).second) return;
-    if (auto nominal = def->isa_nominal()) return queue().emplace(nominal, time_++);
+void PassMan::enqueue(const Def* def) {
+    if (def->is_const() || enqueued(def)) return;
+    assert(!def->isa<Proxy>() && "proxies must not occur anymore after finishing a nom with No_Undo");
 
-    for (auto op : def->ops())
-        analyze(op);
+    enqueue(def->type());
+    if (auto dbg = def->dbg()) enqueue(dbg);
 
-    for (auto& pass : passes_)
-        pass->analyze(def);
+    if (auto nom = def->isa_nom()) {
+        cur_state().stack.push(nom);
+    } else {
+        for (auto op : def->ops())
+            enqueue(op);
+    }
 }
 
 }

@@ -1,57 +1,72 @@
 set(THORIN_SOURCES
-    alpha_equiv.cpp
-    alpha_equiv.h
+    axiom.cpp
+    axiom.h
+    check.cpp
+    check.h
+    debug.cpp
+    debug.h
     def.cpp
     def.h
+    error.cpp
+    error.h
+    lam.cpp
+    lam.h
+    lattice.cpp
+    lattice.h
     normalize.cpp
     normalize.h
     rewrite.cpp
     rewrite.h
+    stream.cpp
+    tuple.cpp
+    tuple.h
     tables.h
-    util.cpp
-    util.h
     world.cpp
     world.h
     analyses/cfg.cpp
     analyses/cfg.h
+    analyses/deptree.cpp
+    analyses/deptree.h
     analyses/domfrontier.cpp
     analyses/domfrontier.h
     analyses/domtree.cpp
     analyses/domtree.h
-    analyses/free_defs.cpp
-    analyses/free_defs.h
     analyses/looptree.cpp
     analyses/looptree.h
     analyses/schedule.cpp
     analyses/schedule.h
     analyses/scope.cpp
     analyses/scope.h
-    analyses/verify.cpp
-    analyses/verify.h
     be/c.cpp
     be/c.h
-    pass/copy_prop.cpp
-    pass/copy_prop.h
-    pass/inliner.cpp
-    pass/inliner.h
-    pass/mem2reg.cpp
-    pass/mem2reg.h
     pass/optimize.cpp
     pass/optimize.h
-    pass/partial_eval.cpp
-    pass/partial_eval.h
     pass/pass.cpp
     pass/pass.h
+    pass/fp/eta_conv.cpp
+    pass/fp/eta_conv.h
+    pass/fp/beta_red.cpp
+    pass/fp/beta_red.h
+    pass/fp/copy_prop.cpp
+    pass/fp/copy_prop.h
+    pass/fp/scalarize.cpp
+    pass/fp/scalarize.h
+    pass/fp/ssa_constr.cpp
+    pass/fp/ssa_constr.h
+    pass/rw/grad_gen.cpp
+    pass/rw/grad_gen.h
+    pass/rw/partial_eval.cpp
+    pass/rw/partial_eval.h
+    pass/rw/ret_wrap.cpp
+    pass/rw/ret_wrap.h
+    pass/rw/bound_elim.cpp
+    pass/rw/bound_elim.h
     transform/cleanup_world.cpp
     transform/cleanup_world.h
-    transform/codegen_prepare.h
-    transform/codegen_prepare.cpp
     transform/flatten_tuples.cpp
     transform/flatten_tuples.h
     transform/mangle.cpp
     transform/mangle.h
-    transform/resolve_loads.cpp
-    transform/resolve_loads.h
     transform/partial_evaluation.cpp
     transform/partial_evaluation.h
     util/args.h
@@ -64,14 +79,10 @@ set(THORIN_SOURCES
     util/indexmap.h
     util/indexset.h
     util/iterator.h
-    util/log.cpp
-    util/log.h
     util/stream.cpp
     util/stream.h
     util/types.h
     util/utility.h
-    util/ycomp.cpp
-    util/ycomp.h
 )
 
 if(LLVM_FOUND)

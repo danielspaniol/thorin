@@ -1,5 +1,7 @@
 #include "thorin/analyses/schedule.h"
 
+#include <fstream>
+
 #include "thorin/config.h"
 #include "thorin/def.h"
 #include "thorin/world.h"
@@ -7,7 +9,6 @@
 #include "thorin/analyses/domtree.h"
 #include "thorin/analyses/looptree.h"
 #include "thorin/analyses/scope.h"
-#include "thorin/util/log.h"
 
 namespace thorin {
 
@@ -41,11 +42,12 @@ public:
 
     void for_all_defs(std::function<void(const Def*)> f) {
         for (auto&& p : def2uses_) {
-            if (!p.first->isa<Lam>())
+            if (!p.first->isa_nom())
                 f(p.first);
         }
     }
 
+    World& world() const { return scope_.world(); }
     const Uses& uses(const Def* def) const { return def2uses_.find(def)->second; }
     void compute_def2uses();
     void schedule_early() { for_all_defs([&](const Def* def) { schedule_early(def); }); }
@@ -79,8 +81,8 @@ void Scheduler::compute_def2uses() {
     };
 
     for (auto n : cfg_.reverse_post_order()) {
-        if (n->nominal()->is_set())
-            enqueue(n->nominal());
+        if (n->nom()->is_set())
+            enqueue(n->nom());
     }
 
     while (!queue.empty()) {
@@ -88,8 +90,8 @@ void Scheduler::compute_def2uses() {
 
         for (size_t i = 0, e = def->num_ops(); i != e; ++i) {
             auto op = def->op(i);
-            if (scope_.contains(op)) {
-                def2uses_[op].emplace(def, i);
+            if (scope_.bound(op)) {
+                def2uses_[op]->emplace(def, i);
                 enqueue(op);
             }
         }
@@ -102,14 +104,14 @@ const CFNode* Scheduler::schedule_early(const Def* def) {
 
     const CFNode* result;
 
-    if (auto nom = def->isa_nominal<Lam>()) {
+    if (auto nom = def->isa_nom()) {
         result = cfg_[nom];
-    } else if (auto param = def->isa<Param>()) {
-        result = schedule_early(param->nominal());
+    } else if (auto var = def->isa<Var>()) {
+        result = schedule_early(var->nom());
     } else {
         result = cfg_.entry();
         for (auto op : def->ops()) {
-            if (op->isa<Lam>()) continue;
+            if (op->isa_nom()) continue;
             if (def2uses_.contains(op)) {
                 auto n = schedule_early(op);
                 if (domtree_.depth(n) > domtree_.depth(result))
@@ -127,14 +129,14 @@ const CFNode* Scheduler::schedule_late(const Def* def) {
 
     const CFNode* result = nullptr;
 
-    if (auto nom = def->isa_nominal<Lam>()) {
+    if (auto nom = def->isa_nom()) {
         result = cfg_[nom];
-    } else if (auto param = def->isa<Param>()) {
-        result = schedule_late(param->nominal());
+    } else if (auto var = def->isa<Var>()) {
+        result = schedule_late(var->nom());
     } else {
         for (auto use : uses(def)) {
             auto n = schedule_late(use);
-            result = result ? domtree_.lca(result, n) : n;
+            result = result ? domtree_.least_common_ancestor(result, n) : n;
         }
     }
 
@@ -148,7 +150,7 @@ const CFNode* Scheduler::schedule_smart(const Def* def) {
 
     auto early = schedule_early(def);
     auto late  = schedule_late (def);
-    DLOG("schedule {}: {} -- {}", def, early, late);
+    //world().DLOG("schedule {}: {} -- {}", def, early, late);
 
     const CFNode* result;
     //if (def->isa<Enter>() || def->isa<Slot>() || Enter::is_out_mem(def) || Enter::is_out_frame(def)) {
@@ -165,7 +167,7 @@ const CFNode* Scheduler::schedule_smart(const Def* def) {
 
             // HACK this should actually never occur
             if (i == nullptr) {
-                WLOG("don't know where to put {}", def);
+                world().WLOG("don't know where to put {}", def);
                 result = late;
                 break;
             }
@@ -231,7 +233,6 @@ Schedule::Schedule(const Scope& scope, Mode mode)
 {
     block_schedule();
     Scheduler(scope, *this);
-    verify();
 }
 
 void Schedule::block_schedule() {
@@ -246,71 +247,28 @@ void Schedule::block_schedule() {
     assert(blocks_.size() == i);
 }
 
-void Schedule::verify() {
-#if 0
-#if THORIN_ENABLE_CHECKS
-    bool ok = true;
-    auto& domtree = cfg().domtree();
-    Schedule::Map<const Def*> block2mem(*this);
-
+Stream& Schedule::stream(Stream& s) const {
     for (auto& block : *this) {
-        const Def* mem = block.nominal()->mem_param();
-        auto idom = block.nominal() != scope().entry() ? domtree.idom(block.node()) : block.node();
-        mem = mem ? mem : block2mem[(*this)[idom]];
-        for (auto def : block) {
-            if (is_memop(def)) {
-                const Def* m;
-                if (auto app = def->isa<App>())
-                    m = app->arg(0);
-                else
-                    m = def->op(0);
-                if (m != mem) {
-                    def->dump();
-                    WLOG("incorrect schedule: {} @ '{}'; current mem is {} @ '{}') - scope entry: {}", def, def->loc(), mem, mem->loc(), scope_.entry());
-                    ok = false;
-                }
-                mem = def->out(0);
-            }
-        }
-        block2mem[block] = mem;
-    }
-
-    assert(ok && "incorrectly wired or scheduled memory operations");
-#endif
-#endif
-}
-
-std::ostream& Schedule::stream(std::ostream& os) const {
-    for (auto& block : *this) {
-        auto nom = block.nominal();
-        if (isa<Tag::End>(nom)) continue;
+        auto nom = block.nom();
+        if (nom == scope_.exit()) continue;
 
         bool indent = nom != scope().entry();
-        if (indent)
-            os << up;
-        os << endl;
-        streamf(os, "{}: {}", nom->unique_name(), nom->type()) << up_endl;
-        for (auto def : block)
-            def->stream_assignment(os);
+        if (indent) s.indent();
+        s.endl().fmt("{}: {}", nom->unique_name(), nom->type()).indent();
 
-        os << down_endl;
-        if (indent)
-            os << down;
+        for (auto def : block) def->stream_assignment(s.endl());
+
+        s.dedent();
+        if (indent) s.dedent();
+        s.endl();
     }
-    return os << endl;
+
+    return s;
 }
 
-void Schedule::write_thorin(const char* filename) const { std::ofstream file(filename); stream(file); }
-
-void Schedule::thorin() const {
-    auto filename = world().name() + "_" + scope().entry()->unique_name() + ".thorin";
-    write_thorin(filename.c_str());
-}
+template void Streamable<Schedule>::dump() const;
+template void Streamable<Schedule>::write() const;
 
 //------------------------------------------------------------------------------
-
-void verify_mem(World& world) {
-    world.visit([&](const Scope& scope) { schedule(scope); });
-}
 
 }

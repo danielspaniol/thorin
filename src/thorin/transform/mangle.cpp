@@ -1,6 +1,5 @@
 #include "thorin/transform/mangle.h"
 
-#include "thorin/util.h"
 #include "thorin/world.h"
 #include "thorin/analyses/scope.h"
 
@@ -10,11 +9,11 @@ Mangler::Mangler(const Scope& scope, Defs args, Defs lift)
     : scope_(scope)
     , args_(args)
     , old_entry_(scope.entry()->as<Lam>())
-    , defs_(scope.defs().capacity())
-    , old2new_(scope.defs().capacity())
+    , defs_(scope.bound().capacity())
+    , old2new_(scope.bound().capacity())
 {
     assert(old_entry()->is_set());
-    assert(args.size() == old_entry()->num_params());
+    assert(args.size() == old_entry()->num_vars());
 
     // TODO correctly deal with lams here
     std::queue<const Def*> queue;
@@ -35,33 +34,33 @@ Mangler::Mangler(const Scope& scope, Defs args, Defs lift)
 }
 
 Lam* Mangler::mangle() {
-    // create new_entry - but first collect and specialize all param types
-    std::vector<const Def*> param_types;
-    for (size_t i = 0, e = old_entry()->num_params(); i != e; ++i) {
+    // create new_entry - but first collect and specialize all var types
+    std::vector<const Def*> var_types;
+    for (size_t i = 0, e = old_entry()->num_vars(); i != e; ++i) {
         if (args_[i]->isa<Top>())
-            param_types.emplace_back(old_entry()->param(i)->type());
+            var_types.emplace_back(old_entry()->var(i)->type());
     }
 
-    auto cn = world().cn(param_types);
-    new_entry_ = world().lam(cn, old_entry()->debug_history());
+    auto cn = world().cn(var_types);
+    new_entry_ = world().nom_lam(cn, old_entry()->debug_history());
 
     // HACK we wil remove this code anyway
     bool all = true;
-    // map params
+    // map vars
     //old2new_[old_entry()] = old_entry();
-    for (size_t i = 0, j = 0, e = old_entry()->num_params(); i != e; ++i) {
-        auto old_param = old_entry()->param(i);
+    for (size_t i = 0, j = 0, e = old_entry()->num_vars(); i != e; ++i) {
+        auto old_var = old_entry()->var(i);
         if (!args_[i]->isa<Top>())
-            old2new_[old_param] = args_[i];
+            old2new_[old_var] = args_[i];
         else {
             all = false;
-            auto new_param = new_entry()->param(j++, old_param->debug_history());
-            old2new_[old_param] = new_param;
+            auto new_var = new_entry()->var(j++, old_var->debug_history());
+            old2new_[old_var] = new_var;
         }
     }
 
     if (all)
-        old2new_[old_entry()->param()] = world().tuple(args_);
+        old2new_[old_entry()->var()] = world().tuple(args_);
 
     auto new_filter = mangle(old_entry()->filter());
     auto new_body   = mangle(old_entry()->body());
@@ -76,11 +75,11 @@ const Def* Mangler::mangle(const Def* old_def) {
     if (!within(old_def)) return old_def;
 
     auto new_type = mangle(old_def->type());
-    auto new_debug = old_def->debug() ? mangle(old_def->debug()) : nullptr;
+    auto new_dbg  = old_def->dbg() ? mangle(old_def->dbg()) : nullptr;
 
     const Def* new_def = nullptr;
-    if (auto old_nom = old_def->isa_nominal()) {
-        new_def = old_nom->stub(world(), new_type, new_debug);
+    if (auto old_nom = old_def->isa_nom()) {
+        new_def = old_nom->stub(world(), new_type, new_dbg );
         old2new_[old_def] = new_def;
     }
 
@@ -101,7 +100,7 @@ const Def* Mangler::mangle(const Def* old_def) {
 
             if (app->callee() == old_entry()) {
                 if (args_.size() == 1 && args_[0] == new_ops[1])
-                    return world().app(new_entry(), thorin::Defs {}, app->debug());
+                    return world().app(new_entry(), thorin::Defs {}, app->dbg ());
 
                 if (auto tuple = new_ops[1]->isa<Tuple>()) {
                     assert(tuple->num_ops() == args_.size());
@@ -117,15 +116,15 @@ const Def* Mangler::mangle(const Def* old_def) {
 
                     if (substitute) {
                         // TODO lifting
-                        //const auto& args = concat(new_args.cut(cut), new_entry()->params().get_back(lift_.size()));
+                        //const auto& args = concat(new_args.cut(cut), new_entry()->vars().get_back(lift_.size()));
                         auto args = tuple->ops().cut(cut);
-                        return world().app(new_entry(), args, app->debug());
+                        return world().app(new_entry(), args, app->dbg ());
                     }
                 }
             }
         }
 
-        new_def = old_def->rebuild(world(), new_type, new_ops, new_debug);
+        new_def = old_def->rebuild(world(), new_type, new_ops, new_dbg );
         old2new_[old_def] = new_def;
     }
 
@@ -139,7 +138,7 @@ Lam* mangle(const Scope& scope, Defs args, Defs lift) {
 }
 
 Lam* drop(const App* app) {
-    Scope scope(app->callee()->as_nominal<Lam>());
+    Scope scope(app->callee()->as_nom<Lam>());
     return drop(scope, app->args());
 }
 

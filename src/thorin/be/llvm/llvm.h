@@ -32,8 +32,8 @@ public:
 protected:
     virtual void optimize(int opt);
 
-    unsigned compute_variant_bits(const VariantType*);
-    unsigned compute_variant_op_bits(const Def*);
+    //unsigned compute_variant_bits(const VariantType*);
+    //unsigned compute_variant_op_bits(const Def*);
     llvm::Type* convert(const Def*);
     llvm::Value* emit(const Def*);
     llvm::Value* lookup(const Def*);
@@ -42,7 +42,7 @@ protected:
     llvm::Function* emit_function_decl(Lam*);
     virtual unsigned convert_addr_space(u64);
     virtual void emit_function_decl_hook(Lam*, llvm::Function*) {}
-    virtual llvm::Value* map_param(llvm::Function*, llvm::Argument* a, const Def*) { return a; }
+    virtual llvm::Value* map_var(llvm::Function*, llvm::Argument* a, const Def*) { return a; }
     virtual void emit_function_start(llvm::BasicBlock*, Lam*) {}
     virtual llvm::FunctionType* convert_fn_type(Lam*);
 
@@ -72,6 +72,7 @@ private:
     void emit_vectorize(u32, llvm::Function*, llvm::CallInst*);
 
 protected:
+    llvm::Value* i1toi32(llvm::Value*);
     void create_loop(llvm::Value*, llvm::Value*, llvm::Value*, llvm::Function*, std::function<void(llvm::Value*)>);
     llvm::Value* create_tmp_alloca(llvm::Type*, std::function<llvm::Value* (llvm::AllocaInst*)>);
 
@@ -84,7 +85,7 @@ protected:
     llvm::CallingConv::ID function_calling_convention_;
     llvm::CallingConv::ID device_calling_convention_;
     llvm::CallingConv::ID kernel_calling_convention_;
-    DefMap<llvm::Value*> params_;
+    DefMap<llvm::Value*> vars_;
     DefMap<llvm::PHINode*> phis_;
     DefMap<llvm::Value*> defs_;
     LamMap<llvm::Function*> fcts_;

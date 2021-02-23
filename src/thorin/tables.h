@@ -11,40 +11,30 @@ using flags_t  = u32;
 using fields_t = u64;
 using nat_t    = u64;
 
-#define THORIN_NODE(m) m(KindArity, *A)      /* don't  */ \
-                       m(KindMulti, *M)      /* change */ \
-                       m(KindStar,  *)       /* this   */ \
-                       m(Universe, universe) /* order  */ \
-                       m(App, app)                        \
-                       m(Axiom, axiom)                    \
-                       m(Bot, bot)                        \
-                       m(Extract, extract)                \
-                       m(Insert, insert)                  \
-                       m(Lam, lam)                        \
-                       m(Lit, lit)                        \
-                       m(Pack, pack)                      \
-                       m(Pi, pi)                          \
-                       m(Union, union_)                   \
-                       m(Sigma, sigma)                    \
-                       m(Top, top)                        \
-                       m(Tuple, tuple)                    \
-                       m(Variadic, variadic)              \
-                       m(VariantType, variant_type)       \
-                       m(Match_, match_)                  \
-                       m(Nat, nat)                        \
-                       m(Mem, mem)                        \
-                       m(Global, global)                  \
-                       m(Variant, variant)                \
-                       m(Variant_, variant_)              \
-                       m(Analyze, analyze)                \
-                       m(Param, param)
+#define THORIN_NODE(m)                                                        \
+    m(Space, space)     m(Kind, kind)                                         \
+    m(Pi, pi)           m(Lam, lam)     m(App, app)                           \
+    m(Sigma, sigma)     m(Tuple, tuple) m(Extract, extract) m(Insert, insert) \
+    m(Arr, arr)         m(Pack, pack)                                         \
+    m(Join, join)       m(Vel, vel)     m(Test, test)       m(Top, top)       \
+    m(Meet, meet)       m(Et,  et )     m(Pick, pick)       m(Bot, bot)       \
+    m(Proxy, proxy)                                                           \
+    m(Axiom, axiom)                                                           \
+    m(Lit, lit)                                                               \
+    m(Nat, nat)                                                               \
+    m(Var, var)                                                           \
+    m(Global, global)
 
-#define THORIN_TAG(m)                                                                                   \
-    m(Int, int) m(Real, real) m(Ptr, ptr)                                                               \
-    m(WOp, wop) m(ZOp, zop) m(IOp, iop) m(ROp, rop) m(ICmp, icmp) m(RCmp, rcmp) m(Conv, conv) m(PE, pe) \
-    m(Bitcast, bitcast) m(LEA, lea) m(Select, select) m(Sizeof, sizeof)                                 \
-    m(End, end)                                                                                         \
-    m(Alloc, alloc) m(Slot, slot) m(Load, load) m(Store, store)
+#define THORIN_TAG(m)                                               \
+    m(Mem, mem) m(Int, int) m(Real, real) m(Ptr, ptr)               \
+    m(Bit, bit) m(Shr, shr) m(Wrap, wrap) m(Div, div) m(ROp, rop)   \
+    m(ICmp, icmp) m(RCmp, rcmp)                                     \
+    m(Trait, trait) m(Conv, conv) m(PE, pe) m(Acc, acc)             \
+    m(Bitcast, bitcast) m(LEA, lea)                                 \
+    m(Alloc, alloc) m(Slot, slot) m(Load, load) m(Store, store)     \
+    m(Atomic, atomic)                                               \
+    m(Lift, lift)                                                   \
+    m(Grad, grad) m(TangentVector, tangent_vector)
 
 namespace WMode {
 enum : nat_t {
@@ -72,18 +62,22 @@ enum RMode : nat_t {
 };
 }
 
-/// Integer operations that neither take a @p WMode nor do produce a side effect.
-#define THORIN_I_OP(m) m(IOp, ashr) m(IOp, lshr) m(IOp, iand) m(IOp, ior) m(IOp, ixor)
+/// Integer operations that neither take a @p WMode nor do produce a side effect - arithmetic or logical shift right.
+#define THORIN_SHR(m) m(Shr, ashr) m(Shr, lshr)
 /// Integer operations that might wrap and, hence, take @p WMode.
-#define THORIN_W_OP(m) m(WOp, add) m(WOp, sub) m(WOp, mul) m(WOp, shl)
+#define THORIN_WRAP(m) m(Wrap, add) m(Wrap, sub) m(Wrap, mul) m(Wrap, shl)
 /// Integer operations that might produce a "division by zero" side effect.
-#define THORIN_Z_OP(m) m(ZOp, sdiv) m(ZOp, udiv) m(ZOp, smod) m(ZOp, umod)
-/// Floating point (real) operations that take @p RMode.
-#define THORIN_R_OP(m) m(ROp, add) m(ROp, sub) m(ROp, mul) m(ROp, div) m(ROp, mod)
+#define THORIN_DIV(m) m(Div, sdiv) m(Div, udiv) m(Div, srem) m(Div, urem)
+/// Floating point (real) operations that take @p Rreme.
+#define THORIN_R_OP(m) m(ROp, add) m(ROp, sub) m(ROp, mul) m(ROp, div) m(ROp, rem)
+/// Type traits
+#define THORIN_TRAIT(m) m(Trait, size) m(Trait, align)
 /// Conversions
 #define THORIN_CONV(m) m(Conv, s2s) m(Conv, u2u) m(Conv, s2r) m(Conv, u2r) m(Conv, r2s) m(Conv, r2u) m(Conv, r2r)
 /// Partial Evaluation related operations
 #define THORIN_PE(m) m(PE, hlt) m(PE, known) m(PE, run)
+/// Accelerators
+#define THORIN_ACC(m) m(Acc, vecotrize) m(Acc, parallel) m(Acc, opencl) m(Acc, cuda) m(Acc, nvvm) m (Acc, amdgpu)
 
 /**
  * The 5 relations are disjoint and are organized as follows:
@@ -160,6 +154,28 @@ enum RMode : nat_t {
                      m(RCmp, une) /* x x x o - unordered or not equal        */ \
                      m(RCmp,   t) /* x x x x - always true                   */
 
+/**
+ * Table for all binary boolean operations.
+ * See https://en.wikipedia.org/wiki/Truth_table#Binary_operations
+ *                                   x o x o                                */
+#define THORIN_BIT(m)            /* B B A A -                              */ \
+                   m(Bit,     f) /* o o o o - always false                 */ \
+                   m(Bit,   nor) /* o o o x -                              */ \
+                   m(Bit, nciff) /* o o x o - not converse implication     */ \
+                   m(Bit,    na) /* o o x x - not first argument           */ \
+                   m(Bit,  niff) /* o x o o - not implication              */ \
+                   m(Bit,    nb) /* o x o x - not second argument          */ \
+                   m(Bit,  _xor) /* o x x o -                              */ \
+                   m(Bit,  nand) /* o x x x -                              */ \
+                   m(Bit,  _and) /* x o o o -                              */ \
+                   m(Bit,  nxor) /* x o o x -                              */ \
+                   m(Bit,     b) /* x o x o - second argument              */ \
+                   m(Bit,   iff) /* x o x x - implication (if and only if) */ \
+                   m(Bit,     a) /* x x o o - first argment                */ \
+                   m(Bit,  ciff) /* x x o x - converse implication         */ \
+                   m(Bit,   _or) /* x x x o -                              */ \
+                   m(Bit,     t) /* x x x x - always true                  */
+
 namespace Node {
 #define CODE(node, name) node,
 enum : node_t { THORIN_NODE(CODE) Max };
@@ -173,14 +189,17 @@ enum : tag_t { THORIN_TAG(CODE) Max };
 }
 
 #define CODE(T, o) o,
-enum class WOp  : tag_t { THORIN_W_OP (CODE) };
-enum class ZOp  : tag_t { THORIN_Z_OP (CODE) };
-enum class IOp  : tag_t { THORIN_I_OP (CODE) };
-enum class ROp  : tag_t { THORIN_R_OP (CODE) };
-enum class ICmp : tag_t { THORIN_I_CMP(CODE) };
-enum class RCmp : tag_t { THORIN_R_CMP(CODE) };
-enum class Conv : tag_t { THORIN_CONV (CODE) };
-enum class PE   : tag_t { THORIN_PE   (CODE) };
+enum class Bit    : tag_t { THORIN_BIT  (CODE) };
+enum class Shr    : tag_t { THORIN_SHR  (CODE) };
+enum class Wrap   : tag_t { THORIN_WRAP (CODE) };
+enum class Div    : tag_t { THORIN_DIV  (CODE) };
+enum class ROp    : tag_t { THORIN_R_OP (CODE) };
+enum class ICmp   : tag_t { THORIN_I_CMP(CODE) };
+enum class RCmp   : tag_t { THORIN_R_CMP(CODE) };
+enum class Trait  : tag_t { THORIN_TRAIT(CODE) };
+enum class Conv   : tag_t { THORIN_CONV (CODE) };
+enum class PE     : tag_t { THORIN_PE   (CODE) };
+enum class Acc    : tag_t { THORIN_ACC  (CODE) };
 #undef CODE
 
 constexpr ICmp operator|(ICmp a, ICmp b) { return ICmp(flags_t(a) | flags_t(b)); }
@@ -192,14 +211,17 @@ constexpr RCmp operator&(RCmp a, RCmp b) { return RCmp(flags_t(a) & flags_t(b));
 constexpr RCmp operator^(RCmp a, RCmp b) { return RCmp(flags_t(a) ^ flags_t(b)); }
 
 #define CODE(T, o) case T::o: return #T "_" #o;
-constexpr const char* op2str(IOp  o) { switch (o) { THORIN_I_OP (CODE) default: THORIN_UNREACHABLE; } }
-constexpr const char* op2str(WOp  o) { switch (o) { THORIN_W_OP (CODE) default: THORIN_UNREACHABLE; } }
-constexpr const char* op2str(ZOp  o) { switch (o) { THORIN_Z_OP (CODE) default: THORIN_UNREACHABLE; } }
-constexpr const char* op2str(ROp  o) { switch (o) { THORIN_R_OP (CODE) default: THORIN_UNREACHABLE; } }
-constexpr const char* op2str(ICmp o) { switch (o) { THORIN_I_CMP(CODE) default: THORIN_UNREACHABLE; } }
-constexpr const char* op2str(RCmp o) { switch (o) { THORIN_R_CMP(CODE) default: THORIN_UNREACHABLE; } }
-constexpr const char* op2str(Conv o) { switch (o) { THORIN_CONV (CODE) default: THORIN_UNREACHABLE; } }
-constexpr const char* op2str(PE   o) { switch (o) { THORIN_PE   (CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(Bit   o) { switch (o) { THORIN_BIT  (CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(Shr   o) { switch (o) { THORIN_SHR  (CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(Wrap  o) { switch (o) { THORIN_WRAP (CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(Div   o) { switch (o) { THORIN_DIV  (CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(ROp   o) { switch (o) { THORIN_R_OP (CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(ICmp  o) { switch (o) { THORIN_I_CMP(CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(RCmp  o) { switch (o) { THORIN_R_CMP(CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(Trait o) { switch (o) { THORIN_TRAIT(CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(Conv  o) { switch (o) { THORIN_CONV (CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(PE    o) { switch (o) { THORIN_PE   (CODE) default: THORIN_UNREACHABLE; } }
+constexpr const char* op2str(Acc   o) { switch (o) { THORIN_ACC  (CODE) default: THORIN_UNREACHABLE; } }
 #undef CODE
 
 namespace AddrSpace {
@@ -218,25 +240,31 @@ template<class T> constexpr auto Num = size_t(-1);
 #define CODE(T, o) + 1_s
 constexpr auto Num_Nodes = 0_s THORIN_NODE(CODE);
 constexpr auto Num_Tags  = 0_s THORIN_TAG (CODE);
-template<> constexpr auto Num<IOp > = 0_s THORIN_I_OP (CODE);
-template<> constexpr auto Num<WOp > = 0_s THORIN_W_OP (CODE);
-template<> constexpr auto Num<ZOp > = 0_s THORIN_Z_OP (CODE);
-template<> constexpr auto Num<ROp > = 0_s THORIN_R_OP (CODE);
-template<> constexpr auto Num<ICmp> = 0_s THORIN_I_CMP(CODE);
-template<> constexpr auto Num<RCmp> = 0_s THORIN_R_CMP(CODE);
-template<> constexpr auto Num<Conv> = 0_s THORIN_CONV (CODE);
-template<> constexpr auto Num<PE  > = 0_s THORIN_PE   (CODE);
+template<> constexpr auto Num<Bit  > = 0_s THORIN_BIT  (CODE);
+template<> constexpr auto Num<Shr  > = 0_s THORIN_SHR  (CODE);
+template<> constexpr auto Num<Wrap > = 0_s THORIN_WRAP (CODE);
+template<> constexpr auto Num<Div  > = 0_s THORIN_DIV  (CODE);
+template<> constexpr auto Num<ROp  > = 0_s THORIN_R_OP (CODE);
+template<> constexpr auto Num<ICmp > = 0_s THORIN_I_CMP(CODE);
+template<> constexpr auto Num<RCmp > = 0_s THORIN_R_CMP(CODE);
+template<> constexpr auto Num<Trait> = 0_s THORIN_TRAIT(CODE);
+template<> constexpr auto Num<Conv > = 0_s THORIN_CONV (CODE);
+template<> constexpr auto Num<PE   > = 0_s THORIN_PE   (CODE);
+template<> constexpr auto Num<Acc  > = 0_s THORIN_ACC  (CODE);
 #undef CODE
 
-template<tag_t tag> struct Tag2Enum_   { using type = tag_t; };
-template<> struct Tag2Enum_<Tag::IOp > { using type = IOp;   };
-template<> struct Tag2Enum_<Tag::WOp > { using type = WOp;   };
-template<> struct Tag2Enum_<Tag::ZOp > { using type = ZOp;   };
-template<> struct Tag2Enum_<Tag::ROp > { using type = ROp;   };
-template<> struct Tag2Enum_<Tag::ICmp> { using type = ICmp;  };
-template<> struct Tag2Enum_<Tag::RCmp> { using type = RCmp;  };
-template<> struct Tag2Enum_<Tag::Conv> { using type = Conv;  };
-template<> struct Tag2Enum_<Tag::PE  > { using type = PE;    };
+template<tag_t tag> struct Tag2Enum_    { using type = tag_t; };
+template<> struct Tag2Enum_<Tag::Bit  > { using type = Bit;   };
+template<> struct Tag2Enum_<Tag::Shr  > { using type = Shr;   };
+template<> struct Tag2Enum_<Tag::Wrap > { using type = Wrap;  };
+template<> struct Tag2Enum_<Tag::Div  > { using type = Div;   };
+template<> struct Tag2Enum_<Tag::ROp  > { using type = ROp;   };
+template<> struct Tag2Enum_<Tag::ICmp > { using type = ICmp;  };
+template<> struct Tag2Enum_<Tag::RCmp > { using type = RCmp;  };
+template<> struct Tag2Enum_<Tag::Trait> { using type = Trait; };
+template<> struct Tag2Enum_<Tag::Conv > { using type = Conv;  };
+template<> struct Tag2Enum_<Tag::PE   > { using type = PE;    };
+template<> struct Tag2Enum_<Tag::Acc  > { using type = Acc;   };
 template<tag_t tag> using Tag2Enum = typename Tag2Enum_<tag>::type;
 
 }

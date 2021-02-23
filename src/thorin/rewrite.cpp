@@ -7,58 +7,52 @@ namespace thorin {
 
 const Def* Rewriter::rewrite(const Def* old_def) {
     if (auto new_def = old2new.lookup(old_def)) return *new_def;
-    if (scope != nullptr && !scope->contains(old_def)) return old_def;
-
-    if (fn) {
-        if (auto new_def = fn(old_def)) return map(old_def, new_def);
-    }
+    if (scope != nullptr && !scope->bound(old_def)) return old_def;
 
     auto new_type = rewrite(old_def->type());
-    auto new_dbg = old_def->debug();
+    auto new_dbg = old_def->dbg() ? rewrite(old_def->dbg()) : nullptr;
 
-    if (auto old_dbg = old_def->debug(); old_dbg && &new_world != &old_world)
-        new_dbg = rewrite(old_dbg);
-
-    if (auto old_nom = old_def->isa_nominal()) {
+    if (auto old_nom = old_def->isa_nom()) {
         auto new_nom = old_nom->stub(new_world, new_type, new_dbg);
-        map(old_nom, new_nom);
+        old2new[old_nom] = new_nom;
 
         for (size_t i = 0, e = old_nom->num_ops(); i != e; ++i) {
-            if (auto old_op = old_nom->op(i))
-                new_nom->set(i, rewrite(old_op));
+            if (auto old_op = old_nom->op(i)) new_nom->set(i, rewrite(old_op));
         }
+
+        if (auto new_def = new_nom->restructure()) return old2new[old_nom] = new_def;
 
         return new_nom;
     }
 
     Array<const Def*> new_ops(old_def->num_ops(), [&](auto i) { return rewrite(old_def->op(i)); });
-    return map(old_def, old_def->rebuild(new_world, new_type, new_ops, new_dbg)); ;
+    return old2new[old_def] = old_def->rebuild(new_world, new_type, new_ops, new_dbg);
 }
 
 const Def* rewrite(const Def* def, const Def* old_def, const Def* new_def, const Scope& scope) {
     Rewriter rewriter(def->world(), &scope);
-    rewriter.map(old_def, new_def);
+    rewriter.old2new[old_def] = new_def;
     return rewriter.rewrite(def);
 }
 
-const Def* rewrite(Def* nom, const Def* arg, const Scope& scope) {
-    Rewriter rewriter(nom->world(), &scope);
-    rewriter.map(nom->param(), arg);
-    return rewriter.rewrite(nom->ops().back());
+const Def* rewrite(Def* nom, const Def* arg, size_t i, const Scope& scope) {
+    return rewrite(nom->op(i), nom->var(), arg, scope);
 }
 
-const Def* rewrite(Def* nom, const Def* arg) {
+const Def* rewrite(Def* nom, const Def* arg, size_t i) {
+    Scope scope(nom);
+    return rewrite(nom, arg, i, scope);
+}
+
+Array<const Def*> rewrite(Def* nom, const Def* arg, const Scope& scope) {
+    Rewriter rewriter(nom->world(), &scope);
+    rewriter.old2new[nom->var()] = arg;
+    return Array<const Def*>(nom->num_ops(), [&](size_t i) { return rewriter.rewrite(nom->op(i)); });
+}
+
+Array<const Def*> rewrite(Def* nom, const Def* arg) {
     Scope scope(nom);
     return rewrite(nom, arg, scope);
-}
-
-const Def* rewrite(Def* nom, const Scope& scope, RewriteFn fn) {
-    return Rewriter(nom->world(), &scope, fn).rewrite(nom->ops().back());
-}
-
-const Def* rewrite(Def* nom, RewriteFn fn) {
-    Scope scope(nom);
-    return rewrite(nom, scope, fn);
 }
 
 void cleanup(World& old_world) {
@@ -68,7 +62,7 @@ void cleanup(World& old_world) {
     rewriter.old2new.rehash(old_world.defs().capacity());
 
     for (const auto& [name, nom] : old_world.externals())
-        rewriter.rewrite(nom)->as_nominal()->make_external();
+        rewriter.rewrite(nom)->as_nom()->make_external();
 
     swap(rewriter.old_world, rewriter.new_world);
 }

@@ -9,44 +9,40 @@ namespace thorin {
 /// Rewrites part of a program.
 class Rewriter {
 public:
-    Rewriter(World& old_world, World& new_world, const Scope* scope = nullptr, RewriteFn fn = {})
+    Rewriter(World& old_world, World& new_world, const Scope* scope = nullptr)
         : old_world(old_world)
         , new_world(new_world)
         , scope(scope)
-        , fn(fn)
     {
-        old2new[old_world.universe()]  = new_world.universe();
+        old2new[old_world.space()] = new_world.space();
     }
-    Rewriter(World& world, const Scope* scope = nullptr, RewriteFn fn = {})
-        : Rewriter(world, world, scope, fn)
+    Rewriter(World& world, const Scope* scope = nullptr)
+        : Rewriter(world, world, scope)
     {}
 
     const Def* rewrite(const Def* old_def);
-    template<class D> // D may be "Def" or "const Def"
-    D* map(const Def* old_def, D* new_def) { old2new.emplace(old_def, new_def); return new_def; }
     World& world() { assert(&old_world == &new_world); return old_world; }
 
     World& old_world;
     World& new_world;
     const Scope* scope;
     Def2Def old2new;
-    RewriteFn fn;
 };
 
 /// Rewrites @p def by mapping @p old_def to @p new_def while obeying @p scope.
 const Def* rewrite(const Def* def, const Def* old_def, const Def* new_def, const Scope& scope);
 
-/// Rewrites @p nom by substituting @p nom's @p Param with @p arg while obeying @p nom's @p scope.
-const Def* rewrite(Def* nom, const Def* arg);
+/// Rewrites @p nom's @p i^th op by substituting @p nom's @p Var with @p arg while obeying @p nom's @p scope.
+const Def* rewrite(Def* nom, const Def* arg, size_t i);
 
 /// Same as above but uses @p scope as an optimization instead of computing a new @p Scope.
-const Def* rewrite(Def* nom, const Def* arg, const Scope& scope);
+const Def* rewrite(Def* nom, const Def* arg, size_t i, const Scope& scope);
 
-/// Rewrites @p nom by applying @p fn to each @p Def within @p nom's @p Scope.
-const Def* rewrite(Def* nom, RewriteFn fn = {});
+/// Rewrites @p nom's ops by substituting @p nom's @p Var with @p arg while obeying @p nom's @p scope.
+Array<const Def*> rewrite(Def* nom, const Def* arg);
 
 /// Same as above but uses @p scope as an optimization instead of computing a new @p Scope.
-const Def* rewrite(Def* nom, const Scope& scope, RewriteFn fn = {});
+Array<const Def*> rewrite(Def* nom, const Def* arg, const Scope& scope);
 
 /// Removes unreachable and dead code by rebuilding the whole @p world into a new @p World.
 void cleanup(World& world);

@@ -8,7 +8,6 @@
 #include "thorin/util/indexmap.h"
 #include "thorin/util/indexset.h"
 #include "thorin/util/stream.h"
-#include "thorin/util/ycomp.h"
 
 namespace thorin {
 
@@ -25,16 +24,16 @@ typedef GIDSet<const CFNode*> CFNodes;
  * A Control-Flow Node.
  * Managed by @p CFA.
  */
-class CFNode : public Streamable {
+class CFNode : public Streamable<CFNode> {
 public:
     CFNode(Def* nom)
-        : nominal_(nom)
+        : nom_(nom)
         , gid_(gid_counter_++)
     {}
 
     uint64_t gid() const { return gid_; }
-    Def* nominal() const { return nominal_; }
-    std::ostream& stream(std::ostream& os) const override;
+    Def* nom() const { return nom_; }
+    Stream& stream(Stream&) const;
 
 private:
     const CFNodes& preds() const { return preds_; }
@@ -44,7 +43,7 @@ private:
     mutable size_t f_index_ = -1; ///< RPO index in a forward @p CFG.
     mutable size_t b_index_ = -1; ///< RPO index in a backwards @p CFG.
 
-    Def* nominal_;
+    Def* nom_;
     size_t gid_;
     static uint64_t gid_counter_;
     mutable CFNodes preds_;
@@ -66,6 +65,7 @@ public:
     ~CFA();
 
     const Scope& scope() const { return scope_; }
+    World& world() const { return scope().world(); }
     size_t size() const { return nodes().size(); }
     const NomMap<const CFNode*>& nodes() const { return nodes_; }
     const F_CFG& f_cfg() const;
@@ -103,7 +103,7 @@ private:
  * @see DomTreeBase
  */
 template<bool forward>
-class CFG : public YComp {
+class CFG {
 public:
     template<class Value>
     using Map = IndexMap<CFG<forward>, const CFNode*, Value>;
@@ -135,7 +135,6 @@ public:
     const DomTreeBase<forward>& domtree() const;
     const LoopTree<forward>& looptree() const;
     const DomFrontierBase<forward>& domfrontier() const;
-    void stream_ycomp(std::ostream& out) const override;
 
     static size_t index(const CFNode* n) { return forward ? n->f_index_ : n->b_index_; }
 
