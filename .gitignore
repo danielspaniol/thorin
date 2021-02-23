@@ -11,3 +11,6 @@ build*
 html
 test/impala
 src/thorin/config.h
+
+compile_commands.json
+.cache/
