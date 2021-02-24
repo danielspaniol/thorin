@@ -43,9 +43,21 @@ class Algo {
     const Def *back_var(Lam *orig, Lam *primal);
     const Def *final_ret_var(Lam *adjoint);
 
+    void link_vars(Lam *orig, Lam *primal);
+
     // ========== J Wrapper
 
     const Def *J(const Def *def, const Scope &scope);
+    const Def *J_generic(const Def *def, const Scope &scope);
+    const Def *J_free(const Def *free_def);
+    const Def *J_ROp(const Axiom *axiom);
+    const Def *J_Load(const Def *mem, const Def *ptr);
+    const Def *J_Store(const Def *mem, const Def *ptr, const Def *val);
+    const Def *J_App(const App *app, const Scope &scope);
+    const Def *J_Tuple(const Tuple *tuple, const Scope &scope);
+    const Def *J_Pack(const Pack *pack, const Scope &scope);
+    const Def *J_Insert(const Insert *insert, const Scope &scope);
+    const Def *J_Extract(const Extract *extract, const Scope &scope);
 
     // ========== Partial Tangents
 
@@ -70,6 +82,7 @@ class Algo {
     Lam *src_;
     const Pi *final_ret_type_;
     Def2Def old2new_;
+    Def2Def val2pullback_;
 };
 
 Algo::Algo(World &world, Lam *lam)
@@ -183,6 +196,7 @@ Lam *Algo::primal(Lam *orig) {
     auto primal_lam = world_.nom_lam(primal_pi, primal_name(orig));
 
     old2new_[orig] = primal_lam;
+    link_vars(orig, primal_lam);
 
     auto app = orig->body()->as<App>();
     auto next = app->callee();
@@ -246,11 +260,158 @@ const Def *Algo::final_ret_var(Lam *adjoint) {
     return adjoint->var(adjoint->num_vars() - 2, world_.dbg("final_ret"));
 }
 
+void Algo::link_vars(Lam *orig, Lam *primal) {
+    for (size_t i = 0, e = orig->num_vars(); i < e; ++i) {
+        auto orig_var = orig->var(i);
+        auto primal_var = primal->var(i, orig_var->dbg());
+        old2new_[orig_var] = primal_var;
+    }
+}
+
 // ========== J Wrapper
 
 const Def *Algo::J(const Def *def, const Scope &scope) {
-    (void)scope;
-    return def; // TODO
+    if (auto wrapped = old2new_.lookup(def)) {
+        return *wrapped;
+    }
+
+    if (auto lam = def->isa_nom<Lam>()) {
+        return primal(lam);
+    }
+
+    if (!scope.bound(def)) {
+        return J_free(def);
+    }
+
+    if (auto axiom = def->as<Axiom>()) {
+        if (axiom->tag() == Tag::ROp) {
+            return J_ROp(axiom);
+        }
+    }
+
+    if (auto app = def->isa<App>()) {
+
+        if (auto inner_app = app->callee()->isa<App>()) {
+            if (auto axiom = inner_app->callee()->isa<Axiom>()) {
+                if (axiom->tag() == Tag::Load) {
+                    auto [mem, ptr] = J(app->arg(), scope)->split<2>();
+                    return J_Load(mem, ptr);
+                }
+
+                if (axiom->tag() == Tag::Store) {
+                    auto [mem, ptr, val] = J(app->arg(), scope)->split<3>();
+                    return J_Store(mem, ptr, val);
+                }
+            }
+        }
+
+        return J_App(app, scope);
+    }
+
+    if (auto tuple = def->isa<Tuple>()) {
+        return J_Tuple(tuple, scope);
+    }
+
+    if (auto pack = def->isa<Pack>()) {
+        return J_Pack(pack, scope);
+    }
+
+    if (auto insert = def->isa<Insert>()) {
+        return J_Insert(insert, scope);
+    }
+
+    if (auto extract = def->isa<Extract>()) {
+        return J_Extract(extract, scope);
+    }
+
+    return J_generic(def, scope);
+}
+
+const Def *Algo::J_generic(const Def *def, const Scope &scope) {
+    auto ops = def->ops();
+    DefArr new_ops{ops.size(),
+                   [this, ops, &scope](auto i) { return J(ops[i], scope); }};
+    auto new_def = def->rebuild(world_, def->type(), new_ops, def->dbg());
+    old2new_[def] = new_def;
+    return new_def;
+}
+
+const Def *Algo::J_free(const Def *free_def) {
+    // TODO
+    return free_def;
+}
+
+const Def *Algo::J_ROp(const Axiom *axiom) {
+    // TODO
+    return axiom;
+}
+
+const Def *Algo::J_Load(const Def *mem, const Def *ptr) {
+    // TODO
+    (void)ptr;
+    return mem;
+}
+
+const Def *Algo::J_Store(const Def *mem, const Def *ptr, const Def *val) {
+    // TODO
+    (void)ptr;
+    (void)val;
+    return mem;
+}
+
+const Def *Algo::J_App(const App *app, const Scope &scope) {
+    auto callee = app->callee();
+    auto arg = app->arg();
+
+    auto Jcallee = J(callee, scope);
+    auto Jarg = J(arg, scope);
+    auto Japp = world_.app(Jcallee, Jarg, app->dbg());
+
+    if (Jcallee->type() != callee->type() &&
+        Jcallee->type()->as<Pi>()->codom()->isa<Sigma>()) {
+        auto val = world_.extract(Japp, u64(0), app->dbg());
+        auto pullback = world_.extract(Japp, u64(1), pullback_name(app));
+        val2pullback_[val] = pullback;
+        old2new_[app] = val;
+        return val;
+    }
+
+    old2new_[app] = Japp;
+    return Japp;
+}
+
+const Def *Algo::J_Tuple(const Tuple *tuple, const Scope &scope) {
+    auto ops = tuple->ops();
+    DefArr Jops{ops.size(),
+                [this, &ops, &scope](auto i) { return J(ops[i], scope); }};
+    auto Jtuple = world_.tuple(Jops, tuple->dbg());
+    old2new_[tuple] = Jtuple;
+    return Jtuple;
+}
+
+const Def *Algo::J_Pack(const Pack *pack, const Scope &scope) {
+    auto Jbody = J(pack->body(), scope);
+    auto Jshape = J(pack->shape(), scope);
+    auto Jpack = world_.pack(Jbody, Jshape, pack->dbg());
+    old2new_[pack] = Jpack;
+    return Jpack;
+}
+
+const Def *Algo::J_Insert(const Insert *insert, const Scope &scope) {
+    auto Jtuple = J(insert->tuple(), scope);
+    auto Jindex = J(insert->index(), scope);
+    auto Jvalue = J(insert->value(), scope);
+    auto Jinsert = world_.insert(Jtuple, Jindex, Jvalue, insert->dbg());
+    old2new_[insert] = Jinsert;
+    return Jinsert;
+}
+
+const Def *Algo::J_Extract(const Extract *extract, const Scope &scope) {
+    auto Jtuple = J(extract->tuple(), scope);
+    auto Jindex = J(extract->index(), scope);
+    auto Jextract = world_.insert(Jtuple, Jindex, extract->dbg());
+    old2new_[extract] = Jextract;
+    return Jextract;
 }
 
 // ========== Partial Tangents
