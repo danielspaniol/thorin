@@ -13,6 +13,7 @@ public:
   const Def *adjoint(const Def *def);
   const Def *pullback(const Def *def);
   const Def *back(const Def *def);
+  const Def *tangent_init(const Def *def);
 
 private:
   const Def *add_to_name(const Def *def, const std::string &str);
@@ -38,6 +39,7 @@ public:
   const Pi *adjoint(const Pi *pi, const Pi *next_pi);
 
   const Def *tangent(const Def *type);
+  const Pi *tangent_init(Lam *orig_lam);
 
 private:
   BackDiffNaming naming_;

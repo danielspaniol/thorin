@@ -1,10 +1,14 @@
 #include "backdiff.h"
 #include "thorin/analyses/scope.h"
 #include "thorin/def.h"
+#include "thorin/lam.h"
+
+#include <vector>
 
 namespace thorin {
 
 using DefArr = Array<const Def *>;
+using DefDefArr = std::vector<DefDef>;
 
 ////////////////////////////////////////////////////////////////////////////////
 // NAMING
@@ -24,6 +28,10 @@ const Def *BackDiffNaming::pullback(const Def *def) {
 
 const Def *BackDiffNaming::back(const Def *def) {
   return add_to_name(def, "_back");
+}
+
+const Def *BackDiffNaming::tangent_init(const Def *def) {
+  return add_to_name(def, "_tangent_init");
 }
 
 const Def *BackDiffNaming::add_to_name(const Def *def, const std::string &str) {
@@ -118,6 +126,10 @@ const Pi *BackDiffTyping::adjoint(const Pi *pi, const Pi *next_pi) {
   return world_.cn(adjoint_ops, naming_.adjoint(pi));
 }
 
+const Pi *BackDiffTyping::tangent_init(Lam *orig_lam) {
+  return primal(orig_lam->body()->as<App>()->callee()->as_nom<Lam>());
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // IMPLEMENTATION
 ////////////////////////////////////////////////////////////////////////////////
@@ -167,6 +179,7 @@ private:
   // ========== Helpers
 
   const Def *add_back(const Def *target, const Def *def);
+  const Def *replace_front(const Def *target, const Def *def);
 
 private:
   BackDiffNaming naming_;
@@ -175,6 +188,8 @@ private:
   Lam *src_;
   Def2Def old2new_;
   Def2Def val2pullback_;
+  Def2Def primal2mem_; //< points to the current mem object to initialize
+                       // mutable tangents
 };
 
 Algo::Algo(World &world, Lam *lam)
@@ -197,7 +212,12 @@ Lam *Algo::primal(Lam *orig) {
   auto primal_pi = typing_.primal(orig);
   auto primal_lam = world_.nom_lam(primal_pi, naming_.primal(orig));
 
+  auto tangent_init_pi = typing_.tangent_init(orig);
+  auto tangent_init_lam =
+      world_.nom_lam(tangent_init_pi, naming_.tangent_init(orig));
+
   old2new_[orig] = primal_lam;
+  primal2mem_[primal_lam] = tangent_init_lam->mem_var();
   link_vars(orig, primal_lam);
 
   auto app = orig->body()->as<App>();
@@ -206,10 +226,17 @@ Lam *Algo::primal(Lam *orig) {
 
   auto primal_arg = add_back(J(arg, scope), pullback(orig, primal_lam));
   auto primal_next = J(next, scope);
-  auto primal_app = world_.app(primal_arg, primal_next, app->dbg());
+  auto primal_app = world_.app(tangent_init_lam, primal_arg, app->dbg());
 
   primal_lam->set_body(primal_app);
   primal_lam->set_filter(orig->filter());
+
+  auto tangent_init_arg =
+      replace_front(tangent_init_lam->var(), *primal2mem_[primal_lam]);
+  auto tangent_init_app = world_.app(primal_next, tangent_init_arg);
+
+  tangent_init_lam->set_body(tangent_init_app);
+  tangent_init_lam->set_filter(true);
 
   return primal_lam;
 }
@@ -452,8 +479,6 @@ const Def *Algo::update_global_tangents(const Def *mem,
   return mem; // TODO
 }
 
-// ========== Debug
-
 // ========== Helpers
 
 const Def *Algo::add_back(const Def *target, const Def *def) {
@@ -465,6 +490,10 @@ const Def *Algo::add_back(const Def *target, const Def *def) {
     return world_.tuple(ops);
   }
   return world_.tuple({target, def});
+}
+
+const Def *Algo::replace_front(const Def *target, const Def *def) {
+  return target->isa<Tuple>() ? world_.insert(target, u64(0), def) : def;
 }
 
 } // namespace
