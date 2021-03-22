@@ -131,7 +131,7 @@ public:
     /// @name ops
     //@{
     template<size_t N = size_t(-1)>
-    auto ops() const {
+    auto ops() const -> Array<const Def*> {
         if constexpr (N == size_t(-1)) {
             return Defs(num_ops_, ops_ptr());
         } else {
@@ -436,13 +436,13 @@ public:
     friend class World;
 };
 
-template<class T = u64> std::optional<T> isa_lit(const Def* def) {
+template<class T> std::optional<T> isa_lit(const Def* def) {
     if (def == nullptr) return {};
     if (auto lit = def->isa<Lit>()) return lit->get<T>();
     return {};
 }
 
-template<class T = u64> T as_lit(const Def* def) { return def->as<Lit>()->get<T>(); }
+template<class T> T as_lit(const Def* def) { return def->as<Lit>()->get<T>(); }
 
 class Tracker {
 public:

@@ -47,7 +47,7 @@ const Def* CopyProp::rewrite(const Def* def) {
         world().DLOG("var_lam => prop_lam: {}: {} => {}: {}", var_lam, var_lam->type()->dom(), *prop_lam, prop_dom);
 
         size_t j = 0;
-        Array<const Def*> new_vars(app->num_args(), [&](size_t i) {
+        Array<const Def*> new_vars(app->num_args(), [&,args=args](size_t i) {
             return keep_.contains(var_lam->var(i)) ? (*prop_lam)->var(j++) : args[i];
         });
         (*prop_lam)->set(var_lam->apply(world().tuple(new_vars)));

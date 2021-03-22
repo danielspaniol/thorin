@@ -186,7 +186,7 @@ static std::string get_texture_fetch_command(const Def* type) {
 
 static std::string get_texture_fetch_constraint(const Def* type) {
     std::stringstream constraint_str;
-    char c;
+    char c = '\0';
 
     if (auto int_ = isa<Tag::Int>(type)) {
         switch (as_lit<u64>(int_->arg())) {

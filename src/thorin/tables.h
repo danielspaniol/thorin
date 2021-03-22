@@ -240,17 +240,17 @@ template<class T> constexpr auto Num = size_t(-1);
 #define CODE(T, o) + 1_s
 constexpr auto Num_Nodes = 0_s THORIN_NODE(CODE);
 constexpr auto Num_Tags  = 0_s THORIN_TAG (CODE);
-template<> constexpr auto Num<Bit  > = 0_s THORIN_BIT  (CODE);
-template<> constexpr auto Num<Shr  > = 0_s THORIN_SHR  (CODE);
-template<> constexpr auto Num<Wrap > = 0_s THORIN_WRAP (CODE);
-template<> constexpr auto Num<Div  > = 0_s THORIN_DIV  (CODE);
-template<> constexpr auto Num<ROp  > = 0_s THORIN_R_OP (CODE);
-template<> constexpr auto Num<ICmp > = 0_s THORIN_I_CMP(CODE);
-template<> constexpr auto Num<RCmp > = 0_s THORIN_R_CMP(CODE);
-template<> constexpr auto Num<Trait> = 0_s THORIN_TRAIT(CODE);
-template<> constexpr auto Num<Conv > = 0_s THORIN_CONV (CODE);
-template<> constexpr auto Num<PE   > = 0_s THORIN_PE   (CODE);
-template<> constexpr auto Num<Acc  > = 0_s THORIN_ACC  (CODE);
+template<> static constexpr auto Num<Bit  > = 0_s THORIN_BIT  (CODE);
+template<> static constexpr auto Num<Shr  > = 0_s THORIN_SHR  (CODE);
+template<> static constexpr auto Num<Wrap > = 0_s THORIN_WRAP (CODE);
+template<> static constexpr auto Num<Div  > = 0_s THORIN_DIV  (CODE);
+template<> static constexpr auto Num<ROp  > = 0_s THORIN_R_OP (CODE);
+template<> static constexpr auto Num<ICmp > = 0_s THORIN_I_CMP(CODE);
+template<> static constexpr auto Num<RCmp > = 0_s THORIN_R_CMP(CODE);
+template<> static constexpr auto Num<Trait> = 0_s THORIN_TRAIT(CODE);
+template<> static constexpr auto Num<Conv > = 0_s THORIN_CONV (CODE);
+template<> static constexpr auto Num<PE   > = 0_s THORIN_PE   (CODE);
+template<> static constexpr auto Num<Acc  > = 0_s THORIN_ACC  (CODE);
 #undef CODE
 
 template<tag_t tag> struct Tag2Enum_    { using type = tag_t; };

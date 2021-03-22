@@ -293,7 +293,7 @@ private:
 inline World& RWPass::world() { return man().world(); }
 inline const App* is_callee(const Def* def, size_t i) { return i == 0 ? def->isa<App>() : nullptr; }
 
-template<class T = Def> T* RWPass::cur_nom() const { return man().template cur_nom<T>(); }
+template<class T> T* RWPass::cur_nom() const { return man().template cur_nom<T>(); }
 
 }
 
