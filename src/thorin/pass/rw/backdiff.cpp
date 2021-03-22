@@ -394,8 +394,67 @@ const Def *Algo::J_free(const Def *free_def) {
 }
 
 const Def *Algo::J_ROp(const Axiom *axiom) {
-  // TODO
-  return axiom;
+  auto type =
+      world_.nom_pi(world_.kind(), {world_.type_nat(), world_.type_nat()});
+  auto m = type->var(0, world_.dbg("m"));
+  auto real_w = world_.type_real(type->var(1, world_.dbg("w")));
+
+  auto pullback_pi = world_.pi(real_w, world_.sigma({real_w, real_w}));
+  auto pullback_lam = world_.nom_lam(pullback_pi, naming_.pullback(axiom));
+
+  auto impl_pi = world_.pi(world_.tuple({real_w, real_w}), real_w);
+  auto impl_lam = world_.nom_lam(impl_pi, axiom->dbg());
+
+  type->set_codom(
+      world_.pi({real_w, real_w}, world_.sigma({real_w, pullback_pi})));
+
+  auto lam = world_.nom_lam(type, axiom->dbg());
+  lam->set_body(impl_lam);
+  lam->set_filter(true);
+
+  auto op = ROp(axiom->flags());
+  auto a = impl_lam->var(0, world_.dbg("a"));
+  auto b = impl_lam->var(1, world_.dbg("b"));
+  auto res = world_.op(op, m, a, b, world_.dbg("res"));
+  impl_lam->set_body(world_.tuple({res, pullback_lam}));
+  impl_lam->set_filter(true);
+
+  auto tan = pullback_lam->var(0, world_.dbg("∂res"));
+  auto neg_tan = world_.op_negate(tan, world_.dbg("-∂res"));
+  pullback_lam->set_filter(true);
+
+  switch (op) {
+  case ROp::add: {
+    auto tan_a = tan;
+    auto tan_b = tan;
+    pullback_lam->set_body(world_.tuple({tan_a, tan_b}));
+    break;
+  }
+  case ROp::sub: {
+    auto tan_a = tan;
+    auto tan_b = neg_tan;
+    pullback_lam->set_body(world_.tuple({tan_a, tan_b}));
+    break;
+  }
+  case ROp::mul: {
+    auto tan_a = world_.op(ROp::mul, m, b, tan, world_.dbg("∂a"));
+    auto tan_b = world_.op(ROp::mul, m, a, tan, world_.dbg("∂b"));
+    pullback_lam->set_body(world_.tuple({tan_a, tan_b}));
+    break;
+  }
+  case ROp::div: {
+    auto tan_a = world_.op(ROp::div, m, tan, b, world_.dbg("∂a"));
+    auto tan_b = world_.op(ROp::mul, m, world_.op(ROp::mul, m, neg_tan, a),
+                           world_.op(ROp::mul, m, b, b), world_.dbg("∂b"));
+    pullback_lam->set_body(world_.tuple({tan_a, tan_b}));
+    break;
+  }
+  case ROp::rem:
+    return axiom;
+  }
+
+  old2new_[axiom] = lam;
+  return lam;
 }
 
 const Def *Algo::J_Load(const Def *mem, const Def *ptr) {
