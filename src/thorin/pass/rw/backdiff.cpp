@@ -1,7 +1,9 @@
 #include "backdiff.h"
 #include "thorin/analyses/scope.h"
+#include "thorin/axiom.h"
 #include "thorin/def.h"
 #include "thorin/lam.h"
+#include "thorin/util/utility.h"
 
 #include <vector>
 
@@ -160,7 +162,7 @@ private:
 
   const Def *J(const Def *def, const Scope &scope);
   const Def *J_generic(const Def *def, const Scope &scope);
-  const Def *J_free(const Def *free_def);
+  const Def *J_free(const Def *free_def, const Scope& scope);
   const Def *J_ROp(const Axiom *axiom);
   const Def *J_Load(const Def *mem, const Def *ptr);
   const Def *J_Store(const Def *mem, const Def *ptr, const Def *val);
@@ -171,6 +173,11 @@ private:
   const Def *J_Extract(const Extract *extract, const Scope &scope);
 
   // ========== Partial Tangents
+
+  void init_tangent_zero(Lam *primal_lam, const Def *tangent_type);
+
+  const Def *tangent_zero(const Def *tangent_type);
+  const Def *tangent_plus(const Def *tangent_type, const Def *a, const Def *b);
 
   DefArr collect_local_tangents(Lam *primal);
   const Def *update_global_tangents(const Def *mem,
@@ -332,7 +339,7 @@ const Def *Algo::J(const Def *def, const Scope &scope) {
   }
 
   if (!scope.bound(def)) {
-    return J_free(def);
+    return J_free(def, scope);
   }
 
   if (auto axiom = def->as<Axiom>()) {
@@ -388,9 +395,14 @@ const Def *Algo::J_generic(const Def *def, const Scope &scope) {
   return new_def;
 }
 
-const Def *Algo::J_free(const Def *free_def) {
-  // TODO
-  return free_def;
+const Def *Algo::J_free(const Def *free_def, const Scope& scope) {
+  auto lam = binding_lam(free_def);
+  auto primal_lam = (*old2new_[lam])->as_nom<Lam>();
+  auto tangent_type = typing_.tangent(free_def->type());
+
+  init_tangent_zero(primal_lam, tangent_type);
+
+  return J_generic(free_def, scope);
 }
 
 const Def *Algo::J_ROp(const Axiom *axiom) {
@@ -526,6 +538,54 @@ const Def *Algo::J_Extract(const Extract *extract, const Scope &scope) {
 }
 
 // ========== Partial Tangents
+
+void Algo::init_tangent_zero(Lam *primal_lam, const Def *tangent_type) {
+  auto mem = *primal2mem_[primal_lam];
+  auto [mem2, ptr] = world_.op_alloc(tangent_type, mem)->split<2>();
+  auto mem3 = world_.op_store(mem2, ptr, tangent_zero(tangent_type));
+
+  primal2mem_[primal_lam] = mem3;
+}
+
+const Def *Algo::tangent_zero(const Def *tangent_type) {
+  if (isa_sized_type(tangent_type)) {
+    return world_.lit_real(r64(0.0));
+  }
+
+  if (auto sigma = tangent_type->isa<Sigma>()) {
+    auto ops = sigma->ops();
+    DefArr zero_ops{ops.size(),
+                    [this, &ops](auto i) { return tangent_zero(ops[i]); }};
+    return world_.sigma(zero_ops);
+  }
+
+  THORIN_UNREACHABLE;
+}
+
+const Def *Algo::tangent_plus(const Def *tangent_type, const Def *a,
+                              const Def *b) {
+  if (isa_sized_type(tangent_type)) {
+    assert(a->type() == tangent_type);
+    assert(b->type() == tangent_type);
+    return world_.op(ROp::add, 0, a, b);
+  }
+
+  if (auto sigma = tangent_type->isa<Sigma>()) {
+    auto ops = sigma->ops();
+    auto mk_add = [this, &ops, a, b](auto i) {
+      auto type = ops[i];
+      auto a_op = a->op(i);
+      auto b_op = b->op(i);
+      assert(a_op->type() == type);
+      assert(b_op->type() == type);
+      return tangent_plus(type, a_op, b_op);
+    };
+    DefArr zero_ops{ops.size(), mk_add};
+    return world_.sigma(zero_ops);
+  }
+
+  THORIN_UNREACHABLE;
+}
 
 DefArr Algo::collect_local_tangents(Lam *primal) {
   (void)primal;
