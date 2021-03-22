@@ -1,5 +1,6 @@
 #include "backdiff.h"
 #include "thorin/analyses/scope.h"
+#include "thorin/def.h"
 
 namespace thorin {
 
@@ -141,6 +142,8 @@ private:
 
   void link_vars(Lam *orig, Lam *primal);
 
+  Lam *binding_lam(const Def *free_var);
+
   // ========== J Wrapper
 
   const Def *J(const Def *def, const Scope &scope);
@@ -265,6 +268,29 @@ void Algo::link_vars(Lam *orig, Lam *primal) {
     auto primal_var = primal->var(i, orig_var->dbg());
     old2new_[orig_var] = primal_var;
   }
+}
+
+Lam *Algo::binding_lam(const Def *free_var) {
+  if (free_var->isa<Axiom>() || isa_lit(free_var) || free_var->isa<Global>()) {
+    return nullptr;
+  }
+
+  if (auto var = free_var->isa<Var>()) {
+    return var->nom()->as_nom<Lam>();
+  }
+
+  Lam *innermost = nullptr;
+  std::optional<Scope> scope{};
+  for (auto op : free_var->ops()) {
+    if (auto lam = binding_lam(op); lam && lam != innermost) {
+      if (scope->bound(lam)) {
+        innermost = lam;
+        scope.emplace(innermost);
+      }
+    }
+  }
+
+  return innermost;
 }
 
 // ========== J Wrapper
